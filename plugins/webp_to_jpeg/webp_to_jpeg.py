@@ -31,22 +31,45 @@ def _emit_fatal(message: str) -> None:
     sys.exit(1)
 
 
-def _install_deps_via_pip() -> None:
+def _pip_install(
+    python_cmd: str, packages: list[str]
+) -> None:
+    """Install `packages` into `python_cmd`'s environment.
+
+    Some distributions (hotio/stash, Docker images that build venvs with
+    `--without-pip`) ship a Python that has no `pip` module. Bootstrap
+    via `ensurepip` before attempting the install.
+    """
     import subprocess
+
+    try:
+        subprocess.check_call(
+            [python_cmd, "-m", "pip", "--version"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except subprocess.CalledProcessError:
+        subprocess.check_call(
+            [python_cmd, "-m", "ensurepip", "--default-pip"],
+            stdout=subprocess.DEVNULL,
+        )
 
     subprocess.check_call(
         [
-            sys.executable,
+            python_cmd,
             "-m",
             "pip",
             "install",
             "--quiet",
             "--disable-pip-version-check",
             "--break-system-packages",
-            "Pillow>=10.0.0",
-            "stashapi>=0.1.5",
+            *packages,
         ]
     )
+
+
+def _install_deps_via_pip() -> None:
+    _pip_install(sys.executable, ["Pillow>=10.0.0", "stashapi>=0.1.5"])
 
 
 def _deps_already_importable() -> bool:

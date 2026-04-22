@@ -55,32 +55,34 @@ def _make_webp(color=(60, 180, 220), size=(128, 128)) -> bytes:
     return buf.getvalue()
 
 
-def test_plugin_runs_inside_stash_and_converts_webp(
-    client, sandbox, seeded_scene, plugins_installed
-):
-    scene_id = seeded_scene["id"]
+def _reset_cover_to_webp(client, scene_id: str) -> None:
     client.set_cover_raw(scene_id, "image/webp", _make_webp())
-
     before = client.fetch_cover(scene_id)
-    assert before[:4] == b"RIFF" and before[8:12] == b"WEBP", (
-        "seed cover should be WEBP; got: " + before[:16].hex()
-    )
+    assert before[:4] == b"RIFF" and before[8:12] == b"WEBP"
 
+
+def _run_task_and_verify_jpeg(client, sandbox, scene_id: str) -> None:
     job_id = client.run_plugin_task(PLUGIN_ID, TASK_NAME)
     job = client.wait_for_plugin_task(job_id, timeout=300)
-
     assert job["status"] == "FINISHED", (
-        f"plugin task did not finish cleanly: {job}\n"
+        f"plugin task did not finish: {job}\n"
         f"sandbox logs:\n{sandbox.logs(tail=300)}"
     )
     assert not job.get("error"), (
-        f"plugin task reported error: {job.get('error')}\n"
+        f"plugin task errored: {job.get('error')}\n"
+        f"sandbox logs:\n{sandbox.logs(tail=300)}"
+    )
+    after = client.fetch_cover(scene_id)
+    assert after[:3] == b"\xff\xd8\xff", (
+        f"cover should be JPEG; got: {after[:16].hex()}\n"
         f"sandbox logs:\n{sandbox.logs(tail=300)}"
     )
 
-    after = client.fetch_cover(scene_id)
-    assert after[:3] == b"\xff\xd8\xff", (
-        "cover should be JPEG after the plugin runs inside Stash; "
-        f"got magic bytes: {after[:16].hex()}\n"
-        f"sandbox logs:\n{sandbox.logs(tail=300)}"
-    )
+
+def test_plugin_runs_inside_stash_and_converts_webp(
+    client, sandbox, seeded_scene, plugins_installed
+):
+    _reset_cover_to_webp(client, seeded_scene["id"])
+    _run_task_and_verify_jpeg(client, sandbox, seeded_scene["id"])
+
+
