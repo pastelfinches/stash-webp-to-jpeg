@@ -1,59 +1,80 @@
-# WEBP to JPEG Cover Converter
+# pastelfinches / stash-plugins
 
-A [Stash](https://github.com/stashapp/stash) plugin that finds scene cover images stored as WEBP and re-encodes them as JPEG in-place, preserving the original scraped artwork.
+A source repository of [Stash](https://github.com/stashapp/stash) plugins, built on each push to `main` and published via GitHub Pages.
 
-## Why
+## Plugins
 
-Some VR/gallery clients — most notably [HereSphere](https://heresphere.xyz/) — don't render WEBP. When scrapers or studio packs deliver covers as WEBP, Stash stores them as-is and thumbnails vanish in those clients. The usual "Generate → Cover images" task replaces the cover with a frame grab from the video, which discards the original artwork.
+| Plugin | Description |
+|---|---|
+| [webp_to_jpeg](plugins/webp_to_jpeg) | Convert scene covers stored as WEBP to JPEG in-place, preserving the original artwork. Fixes missing thumbnails in HereSphere and other WEBP-averse clients. |
 
-This plugin takes the middle path: it keeps the exact same image bytes but re-encodes them from WEBP to JPEG, so you keep the studio cover and every client can display it.
+## Install via Stash source URL
 
-## Installation
+1. In Stash, go to **Settings → Plugins → Available Plugins → Add Source**.
+2. Add:
 
-1. Copy the plugin directory into your Stash `plugins/` folder:
-
-   ```sh
-   cd /path/to/stash/plugins
-   git clone https://github.com/pastelfinches/stash-webp-to-jpeg.git
+   ```
+   Name: pastelfinches
+   Source URL: https://pastelfinches.github.io/stash-plugins/main/index.yml
+   Local path: pastelfinches
    ```
 
-2. Install Python dependencies:
+3. Click the source, pick a plugin, install.
+4. Reload plugins when prompted.
 
-   ```sh
-   pip install -r stash-webp-to-jpeg/requirements.txt
-   ```
+Dependencies listed in each plugin's `requirements.txt` must be installed into Stash's Python environment (`pip install -r <plugin>/requirements.txt`).
 
-3. In Stash: **Settings → Plugins → Reload Plugins**.
+## Repository layout
 
-## Usage
+```
+plugins/<plugin_id>/
+    <plugin_id>.yml       # Stash plugin manifest
+    <plugin_id>.py        # plugin script
+    requirements.txt      # pip dependencies
+tests/
+    test_*.py             # fast unit tests
+    integration/          # Stash sandbox tests
+    sandbox/               # docker-compose for ephemeral Stash
+build_site.sh              # generates _site/index.yml + per-plugin zip
+.github/workflows/         # CI (tests) + GH Pages deploy
+```
 
-1. (Optional) **Settings → Plugins → WEBP to JPEG Cover Converter → Dry Run**: enable this first to see how many covers are WEBP without making any changes.
-2. Go to **Settings → Tasks**, scroll to the plugin section, click **Convert WEBP Covers to JPEG**.
-3. Watch the progress bar. The final summary (scanned/found/converted/errors) is logged at INFO level.
+The plugin id is the filename of the manifest (without `.yml`), and it must match the directory name.
 
-## Settings
+## Developing
 
-| Setting | Type | Default | Description |
-|---|---|---|---|
-| `dryRun` | boolean | `false` | Report WEBP covers without modifying anything. |
-| `jpegQuality` | number | `92` | JPEG encoding quality, 1–100. |
+Run unit tests only (fast, no Docker):
 
-## How It Works
+```sh
+python -m venv .venv && . .venv/bin/activate
+pip install -r tests/requirements-test.txt
+pytest tests/test_*.py
+```
 
-1. Enumerate every scene via GraphQL (paginated).
-2. For each scene, fetch `/scene/{id}/screenshot` over HTTP using the session/API key Stash injects into plugins.
-3. Check the first 12 bytes for the WEBP magic (`RIFF....WEBP`).
-4. If WEBP, decode with Pillow, re-encode as JPEG at the configured quality.
-5. Upload via the `sceneUpdate` GraphQL mutation with `cover_image` as a `data:image/jpeg;base64,...` data URL.
+Run integration tests against a temporary Stash sandbox (requires Docker and ffmpeg):
 
-The original WEBP is replaced; there is no backup. Covers are still stored in Stash's normal generated-images location.
+```sh
+# One-time: generate the tiny test video
+ffmpeg -y -f lavfi -i color=c=black:s=64x64:d=1:r=10 \
+  -c:v libx264 -pix_fmt yuv420p -preset ultrafast \
+  -movflags +faststart tests/sandbox/media/sample.mp4
 
-## Caveats
+pytest tests/integration
+```
 
-- Conversion is one-way and lossy (WEBP → JPEG always is).
-- Scenes with no cover image are skipped silently.
-- If a cover is JPEG, PNG, or any non-WEBP format, it's left untouched.
-- This does not alter `Paths.Screenshot` URL structure — clients keep working.
+The integration harness spins up `stashapp/stash:latest` via docker-compose on `127.0.0.1:19999` (override with `STASH_HOST_PORT=...`), runs the setup wizard programmatically, scans a 1-second test video, seeds it with a WEBP cover, invokes the plugin, and asserts the cover is now JPEG. The container and volumes are torn down at the end of the module.
+
+Build the source index locally:
+
+```sh
+./build_site.sh _site
+cat _site/index.yml
+```
+
+## Credits
+
+- Build script structure adapted from [feederbox826/plugins](https://github.com/feederbox826/plugins) (AGPLv3).
+- Stash plugin API: [stashapp/stash](https://github.com/stashapp/stash), library: [stg-annon/stashapi](https://github.com/stg-annon/stashapi).
 
 ## License
 

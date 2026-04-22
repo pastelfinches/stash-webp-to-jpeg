@@ -1,0 +1,33 @@
+# Ephemeral Stash instance for integration tests.
+#
+#   docker compose up -d
+#   docker compose down -v    # wipes all state
+#
+# Port is bound to 127.0.0.1 only. The host port can be overridden via
+# STASH_HOST_PORT (default 19999) so it does not collide with a real Stash.
+---
+services:
+  stash:
+    image: stashapp/stash:latest
+    container_name: stash-plugins-test
+    restart: "no"
+    ports:
+      - "127.0.0.1:${STASH_HOST_PORT:-19999}:9999"
+    environment:
+      STASH_STASH: /data
+      STASH_GENERATED: /root/.stash/generated
+      STASH_METADATA: /root/.stash/metadata
+      STASH_CACHE: /root/.stash/cache
+    volumes:
+      - stash-state:/root/.stash
+      - ../../tests/sandbox/media:/data
+      - ../../plugins:/root/.stash/plugins:ro
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:9999/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 10s
+
+volumes:
+  stash-state:
