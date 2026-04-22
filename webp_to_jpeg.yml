@@ -1,0 +1,28 @@
+name: WEBP to JPEG Cover Converter
+description: Finds scene covers stored as WEBP and re-encodes them as JPEG in-place, preserving the original scraped artwork. Useful for clients like HereSphere that do not render WEBP.
+version: 0.1.0
+url: https://github.com/pastelfinches/stash-webp-to-jpeg
+
+exec:
+  - python
+  - "{pluginDir}/webp_to_jpeg.py"
+
+interface: raw
+
+errLog: info
+
+tasks:
+  - name: Convert WEBP Covers to JPEG
+    description: Scan all scenes, detect WEBP covers, and convert them to JPEG. Enable "Dry Run" in plugin settings to preview without making changes.
+    defaultArgs:
+      mode: convert
+
+settings:
+  dryRun:
+    displayName: Dry Run
+    description: Report WEBP covers without modifying anything.
+    type: BOOLEAN
+  jpegQuality:
+    displayName: JPEG Quality
+    description: JPEG encoding quality (1-100). Higher = larger files, better quality. Default 92.
+    type: NUMBER

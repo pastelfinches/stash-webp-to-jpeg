@@ -1,0 +1,2 @@
+stashapi>=0.1.5
+Pillow>=10.0.0
