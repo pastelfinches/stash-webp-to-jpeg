@@ -1,7 +1,8 @@
 name: WEBP to JPEG Cover Converter
 description: Finds scene covers stored as WEBP and re-encodes them as JPEG in-place, preserving the original scraped artwork. Useful for clients like HereSphere that do not render WEBP.
-version: 0.1.0
-url: https://github.com/pastelfinches/stash-webp-to-jpeg
+version: 0.2.0
+url: https://github.com/pastelfinches/stash-plugins
+# requires: PythonDepManager
 
 exec:
   - python
@@ -23,6 +24,6 @@ settings:
     description: Report WEBP covers without modifying anything.
     type: BOOLEAN
   jpegQuality:
-    displayName: JPEG Quality
-    description: JPEG encoding quality (1-100). Higher = larger files, better quality. Default 92.
+    displayName: JPEG Quality (1-100, leave 0 for default)
+    description: JPEG encoding quality. Leave at 0 or unset to use the default (92). Higher = larger files, better quality.
     type: NUMBER

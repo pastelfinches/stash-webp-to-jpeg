@@ -15,22 +15,44 @@ import urllib.error
 import urllib.request
 from typing import Any
 
+def _emit_fatal(message: str) -> None:
+    """Emit a fatal error using Stash's log framing and PluginOutput schema.
+
+    Stash's task UI reports plugins as successful when the process exits
+    with code 1 but produces no stdout JSON — emit a proper PluginOutput
+    with a non-null error so the failure is visible.
+    """
+    sys.stderr.write(f"\x01e\x02{message}\n")
+    sys.stderr.flush()
+    try:
+        print(json.dumps({"output": None, "error": message}), flush=True)
+    except Exception:
+        pass
+    sys.exit(1)
+
+
+# Try PythonDepManager first so Docker users don't have to run pip by hand.
+# Falls back to direct imports if the plugin was installed manually and the
+# deps are already on the path.
+try:
+    from PythonDepManager import ensure_import  # type: ignore
+
+    ensure_import("Pillow>=10.0.0", "stashapi>=0.1.5")
+except ImportError:
+    pass
+except Exception as e:  # noqa: BLE001
+    _emit_fatal(f"PythonDepManager failed to install dependencies: {e}")
+
 try:
     import stashapi.log as log
     from stashapi.stashapp import StashInterface
-except ImportError:
-    sys.stderr.write(
-        "Missing dependency: stashapi. Install with: pip install stashapi\n"
-    )
-    sys.exit(1)
-
-try:
     from PIL import Image
-except ImportError:
-    sys.stderr.write(
-        "Missing dependency: Pillow. Install with: pip install Pillow\n"
+except ImportError as e:
+    _emit_fatal(
+        f"Missing dependency: {e.name}. Install the PythonDepManager plugin "
+        "from the stashapp/CommunityScripts source, or `pip install -r "
+        "requirements.txt` in the plugin directory."
     )
-    sys.exit(1)
 
 
 PLUGIN_ID = "webp_to_jpeg"
@@ -96,11 +118,15 @@ def load_settings(stash: StashInterface) -> dict[str, Any]:
     merged = {**defaults, **user}
     # Coerce types in case Stash serializes them as strings.
     merged["dryRun"] = bool(merged.get("dryRun", False))
+    # Stash's NUMBER setting renders null as 0 in the UI even when the user
+    # has never touched it — treat 0 / missing / out-of-range as "use default".
     try:
-        merged["jpegQuality"] = int(merged.get("jpegQuality", 92))
+        q = int(merged.get("jpegQuality") or 0)
     except (TypeError, ValueError):
-        merged["jpegQuality"] = 92
-    merged["jpegQuality"] = max(1, min(100, merged["jpegQuality"]))
+        q = 0
+    if q < 1 or q > 100:
+        q = 92
+    merged["jpegQuality"] = q
     return merged
 
 
