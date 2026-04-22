@@ -14,14 +14,15 @@ Preferred — via plugin source:
 
 1. In Stash, **Settings → Plugins → Available Plugins → Add Source**
 2. Source URL: `https://pastelfinches.github.io/stash-plugins/main/index.yml`
-3. Install **WEBP to JPEG Cover Converter** from the available plugins list.
-4. Install Python dependencies into Stash's environment:
+3. Install **WEBP to JPEG Cover Converter** from the available plugins list. The [`PythonDepManager`](https://discourse.stashapp.cc/t/pythondepmanager/1801) plugin is pulled in as a dependency.
+4. (Optional) Reload plugins when prompted.
 
-   ```sh
-   pip install -r requirements.txt
-   ```
+Python dependencies (Pillow, stashapi) install themselves on first run:
 
-Manual: clone the `plugins/webp_to_jpeg/` directory into Stash's `plugins/` folder and reload plugins.
+- **Preferred path:** PythonDepManager. Requires `git` to be available in the environment. The official `stashapp/stash` Docker image (Alpine) doesn't ship git — `docker exec <container> apk add git` once, and PDM works fine thereafter.
+- **Fallback path:** if PDM isn't installed or isn't usable (e.g. no git), the plugin calls `pip install` directly. Works out-of-the-box on the default Docker image.
+
+Manual install: clone the `plugins/webp_to_jpeg/` directory into Stash's `plugins/` folder and reload plugins.
 
 ## Usage
 

@@ -7,3 +7,4 @@ venv/
 _site/
 .pytest_cache/
 tests/sandbox/stash-data/
+tests/sandbox/test_plugins/

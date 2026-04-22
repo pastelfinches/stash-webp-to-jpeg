@@ -7,9 +7,11 @@ volumes, so each test run is hermetic.
 
 from __future__ import annotations
 
+import io
 import os
 import shutil
 import subprocess
+import tarfile
 import time
 from pathlib import Path
 
@@ -56,7 +58,63 @@ class StashSandbox:
         result = self._compose("logs", "--tail", str(tail), check=False)
         return result.stdout + result.stderr
 
-    def _wait_for_graphql(self, timeout: float) -> None:
+    def exec(self, *args: str, check: bool = True) -> subprocess.CompletedProcess:
+        container = self._compose("ps", "-q", "stash").stdout.strip()
+        if not container:
+            raise StashSandboxError("sandbox is not running")
+        return subprocess.run(
+            ["docker", "exec", container, *args],
+            check=check,
+            capture_output=True,
+            text=True,
+        )
+
+    def copy_into(self, host_path: Path, container_path: str) -> None:
+        container = self._compose("ps", "-q", "stash").stdout.strip()
+        if not container:
+            raise StashSandboxError("sandbox is not running")
+        subprocess.run(
+            ["docker", "cp", str(host_path), f"{container}:{container_path}"],
+            check=True,
+        )
+
+    def download_pythondepmanager(self, dest: Path) -> Path:
+        """Fetch the PythonDepManager plugin directory from CommunityScripts.
+
+        Returns the local path to the extracted `PythonDepManager/` dir,
+        ready to be copy_into()'d at /root/.stash/plugins/PythonDepManager.
+        """
+        resp = requests.get(
+            "https://github.com/stashapp/CommunityScripts/archive/refs/heads/main.tar.gz",
+            stream=True,
+            timeout=60,
+        )
+        resp.raise_for_status()
+        buf = io.BytesIO(resp.content)
+        dest.mkdir(parents=True, exist_ok=True)
+        with tarfile.open(fileobj=buf, mode="r:gz") as tar:
+            prefix_needle = "/plugins/PythonDepManager/"
+            for member in tar.getmembers():
+                if prefix_needle not in member.name:
+                    continue
+                rel = member.name.split(prefix_needle, 1)[1]
+                target = dest / rel
+                if member.isdir():
+                    target.mkdir(parents=True, exist_ok=True)
+                    continue
+                target.parent.mkdir(parents=True, exist_ok=True)
+                src = tar.extractfile(member)
+                if src is None:
+                    continue
+                target.write_bytes(src.read())
+        if not any(dest.iterdir()):
+            raise StashSandboxError(
+                "PythonDepManager not found in CommunityScripts tarball"
+            )
+        return dest
+
+    def _wait_for_graphql(self, timeout: float) -> None:  # noqa: D401
+        """Poll GraphQL until it returns version info or we time out."""
         deadline = time.monotonic() + timeout
         query = {"query": "{ version { version } }"}
         last_err: Exception | None = None

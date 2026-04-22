@@ -1,15 +1,12 @@
-"""End-to-end test for the WEBP→JPEG plugin against an ephemeral Stash.
+"""Integration test for webp_to_jpeg invoked directly (host Python).
 
-Flow:
-    1. Launch stashapp/stash via docker-compose (hermetic state)
-    2. Point Stash's library at tests/sandbox/media/ and trigger a scan
-    3. Pick up the scanned scene and seed it with a WEBP cover via sceneUpdate
-    4. Invoke the plugin script directly (same way Stash would), feeding the
-       PluginInput JSON on stdin
-    5. Re-fetch the cover and assert it is now JPEG (magic bytes) and still
-       visually matches the original WEBP (dominant color preserved)
+Verifies conversion *logic* against a real Stash: seed a WEBP cover,
+invoke the plugin script as a subprocess (same way Stash does), assert
+the cover becomes JPEG.
 
-The test is skipped when docker isn't available.
+This test does NOT exercise PythonDepManager — host Python is assumed
+to have Pillow + stashapi installed. The `test_via_runPluginTask`
+module covers the full plugin-install path inside Stash.
 """
 
 from __future__ import annotations
@@ -17,55 +14,14 @@ from __future__ import annotations
 import io
 import json
 import os
-import shutil
 import subprocess
 import sys
 from pathlib import Path
 
-import pytest
 from PIL import Image
-
-from tests.integration.sandbox import StashSandbox, StashSandboxError
-from tests.integration.stash_client import StashClient
 
 ROOT = Path(__file__).resolve().parents[2]
 PLUGIN_SCRIPT = ROOT / "plugins" / "webp_to_jpeg" / "webp_to_jpeg.py"
-
-
-pytestmark = pytest.mark.skipif(
-    shutil.which("docker") is None, reason="docker is required for integration tests"
-)
-
-
-@pytest.fixture(scope="module")
-def sandbox():
-    sb = StashSandbox()
-    try:
-        sb.start(timeout=180)
-    except StashSandboxError as e:
-        pytest.skip(f"sandbox unavailable: {e}")
-    yield sb
-    sb.stop()
-
-
-@pytest.fixture(scope="module")
-def client(sandbox):
-    return StashClient(sandbox.url)
-
-
-@pytest.fixture(scope="module")
-def seeded_scene(client, sandbox):
-    client.setup()
-    client.set_library_path("/data")
-    job = client.metadata_scan()
-    client.wait_for_job(job, timeout=120)
-
-    scenes = client.find_scenes()
-    if not scenes:
-        pytest.fail(
-            "no scenes scanned; sandbox logs:\n" + sandbox.logs(tail=200)
-        )
-    return scenes[0]
 
 
 def _make_webp(color=(210, 80, 40), size=(128, 128)) -> bytes:
@@ -126,7 +82,7 @@ def test_converts_webp_cover_to_jpeg(client, sandbox, seeded_scene):
 
 
 def test_second_run_is_noop(client, sandbox, seeded_scene):
-    # After the first test, the cover is already JPEG — plugin should find 0 WEBP.
+    # Cover is JPEG now; plugin should find 0 WEBP on the next run.
     result = _run_plugin(sandbox.url)
     summary = result["output"]
     assert summary["webp_covers_found"] == 0

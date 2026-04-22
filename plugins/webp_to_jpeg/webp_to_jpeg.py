@@ -31,17 +31,66 @@ def _emit_fatal(message: str) -> None:
     sys.exit(1)
 
 
-# Try PythonDepManager first so Docker users don't have to run pip by hand.
-# Falls back to direct imports if the plugin was installed manually and the
-# deps are already on the path.
-try:
-    from PythonDepManager import ensure_import  # type: ignore
+def _install_deps_via_pip() -> None:
+    import subprocess
 
-    ensure_import("Pillow>=10.0.0", "stashapi>=0.1.5")
-except ImportError:
-    pass
+    subprocess.check_call(
+        [
+            sys.executable,
+            "-m",
+            "pip",
+            "install",
+            "--quiet",
+            "--disable-pip-version-check",
+            "--break-system-packages",
+            "Pillow>=10.0.0",
+            "stashapi>=0.1.5",
+        ]
+    )
+
+
+def _deps_already_importable() -> bool:
+    try:
+        import stashapi  # noqa: F401
+        import PIL  # noqa: F401
+
+        return True
+    except ImportError:
+        return False
+
+
+def _ensure_deps() -> None:
+    """Make Pillow + stashapi importable, installing them if needed.
+
+    Order of preference:
+    1. Already importable → nothing to do.
+    2. PythonDepManager (isolated, preferred when available).
+    3. Direct `pip install` — for the official Alpine stashapp/stash
+       image, which doesn't ship git (PDM requires git unconditionally).
+    """
+    if _deps_already_importable():
+        return
+    try:
+        from PythonDepManager import ensure_import  # type: ignore
+    except ImportError:
+        ensure_import = None
+    if ensure_import is not None:
+        try:
+            # Pillow's pip name differs from its import name (PIL), so
+            # declare both. Without this, PDM "installs" the package but
+            # the subsequent `from PIL import Image` still fails.
+            ensure_import("PIL:Pillow>=10.0.0", "stashapi>=0.1.5")
+            if _deps_already_importable():
+                return
+        except Exception:  # noqa: BLE001 — fall through to pip
+            pass
+    _install_deps_via_pip()
+
+
+try:
+    _ensure_deps()
 except Exception as e:  # noqa: BLE001
-    _emit_fatal(f"PythonDepManager failed to install dependencies: {e}")
+    _emit_fatal(f"Failed to install dependencies: {e}")
 
 try:
     import stashapi.log as log

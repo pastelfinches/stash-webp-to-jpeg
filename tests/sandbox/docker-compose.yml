@@ -21,7 +21,6 @@ services:
     volumes:
       - stash-state:/root/.stash
       - ../../tests/sandbox/media:/data
-      - ../../plugins:/root/.stash/plugins:ro
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost:9999/healthz"]
       interval: 5s

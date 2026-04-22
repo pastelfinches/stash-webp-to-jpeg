@@ -138,3 +138,42 @@ class StashClient:
         resp = requests.get(f"{self.url}/scene/{scene_id}/screenshot", timeout=15)
         resp.raise_for_status()
         return resp.content
+
+    # ---- plugin lifecycle ----
+
+    def reload_plugins(self) -> None:
+        self.gql("mutation { reloadPlugins }")
+
+    def run_plugin_task(
+        self,
+        plugin_id: str,
+        task_name: str,
+        args_map: dict[str, Any] | None = None,
+    ) -> str:
+        query = """
+        mutation Run($plugin_id: ID!, $task_name: String!, $args_map: Map) {
+          runPluginTask(plugin_id: $plugin_id, task_name: $task_name, args_map: $args_map)
+        }
+        """
+        data = self.gql(
+            query,
+            {"plugin_id": plugin_id, "task_name": task_name, "args_map": args_map or {}},
+        )
+        return data["runPluginTask"]
+
+    def wait_for_plugin_task(self, job_id: str, timeout: float = 300.0) -> dict[str, Any]:
+        """Wait for a plugin task job to exit and return its final job record."""
+        query = """
+        query Jobs { jobQueue { id status description error } }
+        """
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            data = self.gql(query)
+            queue = data.get("jobQueue") or []
+            job = next((j for j in queue if j["id"] == job_id), None)
+            if job is None:
+                return {"id": job_id, "status": "FINISHED", "error": None}
+            if job["status"] in {"FINISHED", "CANCELLED", "FAILED"}:
+                return job
+            time.sleep(0.5)
+        raise TimeoutError(f"Plugin task {job_id} did not complete within {timeout}s")
