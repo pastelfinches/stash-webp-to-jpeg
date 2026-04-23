@@ -1,6 +1,6 @@
 name: VR Preview Flattener
-description: Re-render scene preview videos for VR/AR scenes — crop one eye and (optionally) unwrap fisheye/equirectangular projection so hover-previews are watchable in a normal browser. Manual task only; StashDB tags drive per-scene strategy.
-version: 0.2.0
+description: Re-render scene animated previews for VR/AR scenes by reading the source video, cropping one stereo eye, and reprojecting via ffmpeg v360. Multi-segment output matches Stash's own preview pattern. Manual task only; StashDB tags drive per-scene strategy.
+version: 0.3.0
 url: https://github.com/pastelfinches/stash-plugins
 # requires: PythonDepManager
 
@@ -77,11 +77,27 @@ settings:
     type: STRING
   outputHFov:
     displayName: Output horizontal FOV in degrees (leave 0 for default)
-    description: Horizontal field of view of the flattened preview. Default 90 (a natural "forward-facing" view).
+    description: Horizontal field of view of the flattened preview. Default 120 (wide enough to show most of the scene without severe rectilinear edge distortion).
     type: NUMBER
   outputVFov:
     displayName: Output vertical FOV in degrees (leave 0 for default)
     description: Vertical field of view of the flattened preview. Default 90.
+    type: NUMBER
+  outputWidth:
+    displayName: Output width in pixels (leave 0 for default)
+    description: Pixel width of the flattened preview after scaling. Default 960.
+    type: NUMBER
+  outputHeight:
+    displayName: Output height in pixels (leave 0 for default)
+    description: Pixel height of the flattened preview after scaling. Default 720.
+    type: NUMBER
+  segments:
+    displayName: Number of segments (leave 0 to inherit from Stash)
+    description: Number of short clips stitched together to form the preview, matching Stash's own `previewSegments` convention. Leave at 0 to inherit whatever value Stash is configured with.
+    type: NUMBER
+  segmentDuration:
+    displayName: Segment duration in seconds (leave 0 to inherit from Stash)
+    description: Duration of each segment. Leave at 0 to inherit Stash's `previewSegmentDuration` (typically 0.75s).
     type: NUMBER
   ffmpegBin:
     displayName: ffmpeg binary path
@@ -93,9 +109,9 @@ settings:
     type: STRING
   crf:
     displayName: Output CRF (leave 0 for default)
-    description: x264 CRF quality for the re-encoded preview. Default 18 (near-visually-lossless on second encode pass). Lower = larger & higher quality. Range 1-51.
+    description: x264 CRF quality. Default 18 (visually near-lossless at the preview scale we encode to). Lower = larger & higher quality. Range 1-51.
     type: NUMBER
   preset:
     displayName: x264 preset
-    description: ffmpeg x264 preset. Default "slower" (previews are small/short, so encode speed doesn't matter; better compression = better quality at the same CRF). Options ultrafast / superfast / veryfast / faster / fast / medium / slow / slower / veryslow.
+    description: ffmpeg x264 preset. Default "medium" — with source-based flattening we have far more pixel headroom than preview-based had, so we can afford a faster preset and still produce better output. Options ultrafast / superfast / veryfast / faster / fast / medium / slow / slower / veryslow.
     type: STRING

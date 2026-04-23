@@ -21,6 +21,7 @@ import contextlib
 import json
 import os
 import shlex
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -103,7 +104,10 @@ except ImportError as e:
 
 
 PLUGIN_ID = "vr_preview_flatten"
-MARKER_SUFFIX = ".vr_flat"  # sidecar file next to a processed preview
+# v2 marker: source-based flatten (v0.3+). Old ".vr_flat" markers from the
+# preview-based v0.1/v0.2 releases are intentionally ignored so that an
+# upgrading library re-flattens from source on the next run.
+MARKER_SUFFIX = ".vr_flat_v2"
 
 DEFAULTS: dict[str, Any] = {
     "dryRun": False,
@@ -120,13 +124,24 @@ DEFAULTS: dict[str, Any] = {
     "fov360Tag": "360°",
     "defaultFov": 180,
     "defaultProjection": "equirect",  # equirect | fisheye | flat
-    "outputHFov": 90,
+    "outputHFov": 120,
     "outputVFov": 90,
+    "outputWidth": 960,
+    "outputHeight": 720,
+    # Preview pattern: N short segments spread across the source, stitched.
+    # Zero = inherit from Stash's own configuration.general.preview* at runtime.
+    "segments": 0,
+    "segmentDuration": 0.0,
     "ffmpegBin": "ffmpeg",
     "ffprobeBin": "ffprobe",
     "crf": 18,
-    "preset": "slower",
+    "preset": "medium",
 }
+
+# Fallback preview-shape defaults when Stash config is unavailable.
+# Matches Stash's own out-of-the-box defaults (12 × 0.75s = 9s).
+_FALLBACK_SEGMENTS = 12
+_FALLBACK_SEGMENT_DURATION = 0.75
 
 
 def load_settings(stash: StashInterface) -> dict[str, Any]:
@@ -136,7 +151,8 @@ def load_settings(stash: StashInterface) -> dict[str, Any]:
     except Exception as e:  # noqa: BLE001
         log.warning(f"Could not load configuration: {e}. Using defaults.")
         return dict(DEFAULTS)
-    user = ((config or {}).get("plugins") or {}).get(PLUGIN_ID) or {}
+    cfg = config or {}
+    user = (cfg.get("plugins") or {}).get(PLUGIN_ID) or {}
     merged: dict[str, Any] = {**DEFAULTS, **user}
 
     merged["dryRun"] = bool(merged.get("dryRun", False))
@@ -155,6 +171,8 @@ def load_settings(stash: StashInterface) -> dict[str, Any]:
         ("defaultFov", 90, 360),
         ("outputHFov", 30, 180),
         ("outputVFov", 30, 180),
+        ("outputWidth", 160, 3840),
+        ("outputHeight", 90, 2160),
         ("crf", 1, 51),
     ):
         try:
@@ -164,6 +182,28 @@ def load_settings(stash: StashInterface) -> dict[str, Any]:
         if v < lo or v > hi:
             v = int(DEFAULTS[key])
         merged[key] = v
+
+    # Segments / segmentDuration — inherit Stash's own preview config when
+    # unset (0 sentinel), so our output shape tracks whatever the user has
+    # chosen globally for Stash's preview generator.
+    stash_general = cfg.get("general") or {}
+    try:
+        seg_n = int(merged.get("segments") or 0)
+    except (TypeError, ValueError):
+        seg_n = 0
+    if seg_n <= 0:
+        seg_n = int(stash_general.get("previewSegments") or _FALLBACK_SEGMENTS)
+    merged["segments"] = max(1, min(seg_n, 64))
+
+    try:
+        seg_d = float(merged.get("segmentDuration") or 0.0)
+    except (TypeError, ValueError):
+        seg_d = 0.0
+    if seg_d <= 0:
+        seg_d = float(
+            stash_general.get("previewSegmentDuration") or _FALLBACK_SEGMENT_DURATION
+        )
+    merged["segmentDuration"] = max(0.25, min(seg_d, 10.0))
 
     # STRING settings: blank → default.
     for key in (
@@ -239,7 +279,11 @@ def find_scenes_for_tags(
         scenes {
           id
           title
-          files { fingerprints { type value } }
+          files {
+            path
+            duration
+            fingerprints { type value }
+          }
           tags { id name }
         }
       }
@@ -433,18 +477,59 @@ def _run_ffmpeg(cmd: list[str]) -> tuple[int, str]:
     return proc.returncode, "\n".join(tail)
 
 
-def flatten_mp4(
-    src: Path, vf: str, settings: dict[str, Any]
-) -> tuple[bool, str]:
-    """Re-encode the animated mp4 preview with the filter graph applied.
+def pick_source_file(scene: dict[str, Any]) -> tuple[str, float] | None:
+    """Return (path, duration_seconds) of the first usable source file.
 
-    Previews are short (~10s) and small (~300KB). Quality matters more than
-    encode speed here — the file is already a lossy artifact of Stash's own
-    preview generation, so we're on the second encode pass and the margin
-    for further degradation is thin. Default to CRF 18 + slower preset; the
-    per-scene time cost is tens of milliseconds.
+    "Usable" = has a non-blank `path` and a positive `duration`. Returns
+    None when the scene has no suitable file (e.g. detached scene, missing
+    duration metadata).
     """
-    tmp = src.with_suffix(src.suffix + ".tmp.mp4")
+    for f in scene.get("files") or []:
+        path = f.get("path")
+        try:
+            dur = float(f.get("duration") or 0)
+        except (TypeError, ValueError):
+            dur = 0.0
+        if path and dur > 0:
+            return str(path), dur
+    return None
+
+
+def segment_offsets(
+    duration: float, segments: int, segment_duration: float
+) -> list[float]:
+    """Evenly-spaced segment start offsets across the source duration.
+
+    Uses the same spacing rule as Stash's own preview generator: each
+    segment is centred inside one of N equal-width windows, so offsets are
+    `duration * (i + 0.5) / N` minus half the segment duration so the
+    segment stays inside its window.
+
+    Falls back to packing the segments at t=0 for very short videos where
+    the computed spacing would overlap.
+    """
+    if segments <= 0 or duration <= 0:
+        return [0.0]
+    if duration <= segments * segment_duration:
+        # Not enough runway for spaced-out segments — pack them serially.
+        return [i * segment_duration for i in range(segments)]
+    out: list[float] = []
+    for i in range(segments):
+        centre = duration * (i + 0.5) / segments
+        start = max(0.0, centre - segment_duration / 2)
+        out.append(round(start, 3))
+    return out
+
+
+def _extract_segment(
+    src_path: str,
+    offset: float,
+    duration: float,
+    vf: str,
+    settings: dict[str, Any],
+    out_path: Path,
+) -> tuple[bool, str]:
+    """Decode a single segment from the source, apply filter, re-encode."""
     cmd = [
         settings["ffmpegBin"],
         "-y",
@@ -452,11 +537,15 @@ def flatten_mp4(
         "-hide_banner",
         "-loglevel",
         "error",
+        "-ss",
+        f"{offset:.3f}",
+        "-t",
+        f"{duration:.3f}",
         "-i",
-        str(src),
-        "-an",
+        src_path,
         "-vf",
         vf,
+        "-an",
         "-c:v",
         "libx264",
         "-preset",
@@ -467,28 +556,72 @@ def flatten_mp4(
         "high",
         "-pix_fmt",
         "yuv420p",
-        "-movflags",
-        "+faststart",
-        str(tmp),
+        str(out_path),
     ]
     rc, err = _run_ffmpeg(cmd)
     if rc != 0:
         with contextlib.suppress(FileNotFoundError):
-            tmp.unlink()
+            out_path.unlink()
         return False, err or f"ffmpeg exit {rc}"
-    os.replace(tmp, src)
     return True, ""
 
 
-def flatten_webp(
-    src: Path, vf: str, settings: dict[str, Any]
+def _concat_segments(
+    segment_paths: list[Path], out_path: Path, settings: dict[str, Any]
 ) -> tuple[bool, str]:
-    """Re-encode the animated webp preview with the filter graph applied.
+    """Stitch pre-encoded segments into a single mp4 via stream copy.
 
-    libwebp_anim is the animated-webp encoder. We keep the default frame
-    rate and let the input's own timing ride through.
+    The concat demuxer needs a listing file. Segments were all encoded with
+    identical codec params (same preset/crf/pix_fmt), so stream copy works
+    without re-encoding and is effectively free.
     """
-    tmp = src.with_suffix(src.suffix + ".tmp.webp")
+    work = out_path.parent
+    list_file = work / f"{out_path.name}.concat-list.txt"
+    with list_file.open("w") as f:
+        for p in segment_paths:
+            # ffmpeg concat demuxer needs single-quoted absolute paths.
+            f.write(f"file '{p}'\n")
+    try:
+        cmd = [
+            settings["ffmpegBin"],
+            "-y",
+            "-nostdin",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-f",
+            "concat",
+            "-safe",
+            "0",
+            "-i",
+            str(list_file),
+            "-c",
+            "copy",
+            "-movflags",
+            "+faststart",
+            str(out_path),
+        ]
+        rc, err = _run_ffmpeg(cmd)
+        if rc != 0:
+            with contextlib.suppress(FileNotFoundError):
+                out_path.unlink()
+            return False, err or f"ffmpeg exit {rc}"
+        return True, ""
+    finally:
+        with contextlib.suppress(FileNotFoundError):
+            list_file.unlink()
+
+
+def _flatten_mp4_to_webp(
+    mp4_path: Path, webp_path: Path, settings: dict[str, Any]
+) -> tuple[bool, str]:
+    """Transcode an already-flattened mp4 into the animated-webp preview.
+
+    We deliberately feed the freshly-flattened mp4 (not the source) here —
+    crop/v360 has already been applied to the mp4, and this second pass is
+    a cheap format conversion.
+    """
+    tmp = webp_path.with_suffix(webp_path.suffix + ".tmp.webp")
     cmd = [
         settings["ffmpegBin"],
         "-y",
@@ -497,9 +630,8 @@ def flatten_webp(
         "-loglevel",
         "error",
         "-i",
-        str(src),
-        "-vf",
-        vf,
+        str(mp4_path),
+        "-an",
         "-c:v",
         "libwebp_anim",
         "-loop",
@@ -507,7 +639,7 @@ def flatten_webp(
         "-compression_level",
         "6",
         "-quality",
-        "60",
+        "70",
         str(tmp),
     ]
     rc, err = _run_ffmpeg(cmd)
@@ -515,8 +647,65 @@ def flatten_webp(
         with contextlib.suppress(FileNotFoundError):
             tmp.unlink()
         return False, err or f"ffmpeg exit {rc}"
-    os.replace(tmp, src)
+    os.replace(tmp, webp_path)
     return True, ""
+
+
+def flatten_from_source(
+    src_path: str,
+    duration: float,
+    vf_body: str,
+    out_mp4: Path,
+    out_webp: Path | None,
+    settings: dict[str, Any],
+) -> tuple[bool, str, bool]:
+    """Produce a multi-segment flattened preview for one scene.
+
+    Returns (mp4_ok, message, webp_ok). A failed webp doesn't void the mp4
+    — callers report that as "partial" the same way the old preview-based
+    code did, so a bad webp encoder doesn't block an otherwise successful
+    run.
+    """
+    segments = int(settings["segments"])
+    seg_dur = float(settings["segmentDuration"])
+    out_w = int(settings["outputWidth"])
+    out_h = int(settings["outputHeight"])
+
+    # Per-segment filter graph: crop + v360 + scale to preview dims.
+    vf = f"{vf_body},scale={out_w}:{out_h}"
+
+    offsets = segment_offsets(duration, segments, seg_dur)
+
+    work = out_mp4.parent / f".{out_mp4.stem}.vrflat-work"
+    with contextlib.suppress(FileNotFoundError):
+        shutil.rmtree(work)
+    work.mkdir(parents=True, exist_ok=True)
+
+    try:
+        seg_paths: list[Path] = []
+        for i, off in enumerate(offsets):
+            seg_path = work / f"seg_{i:02d}.mp4"
+            ok, err = _extract_segment(src_path, off, seg_dur, vf, settings, seg_path)
+            if not ok:
+                return False, f"segment {i} @ {off:.1f}s: {err}", False
+            seg_paths.append(seg_path)
+
+        tmp_mp4 = out_mp4.with_suffix(out_mp4.suffix + ".tmp.mp4")
+        ok, err = _concat_segments(seg_paths, tmp_mp4, settings)
+        if not ok:
+            return False, f"concat: {err}", False
+        os.replace(tmp_mp4, out_mp4)
+
+        webp_ok = True
+        if out_webp is not None:
+            w_ok, w_err = _flatten_mp4_to_webp(out_mp4, out_webp, settings)
+            if not w_ok:
+                webp_ok = False
+                log.warning(f"webp from {out_mp4.name} failed: {w_err}")
+        return True, "", webp_ok
+    finally:
+        with contextlib.suppress(FileNotFoundError):
+            shutil.rmtree(work)
 
 
 # ---------- per-scene orchestration --------------------------------------------
@@ -527,74 +716,82 @@ def _process_scene(
     settings: dict[str, Any],
     generated_path: str,
 ) -> dict[str, Any]:
-    """Process one scene. Safe for thread-pool execution."""
+    """Process one scene. Safe for thread-pool execution.
+
+    Flow: locate the source video path + duration, figure out where Stash
+    writes this scene's preview on disk (via hashes → `screenshots/<hash>.*`),
+    then re-render the preview from source in N short segments stitched
+    together. The source video is only opened for reading; the preview
+    files are overwritten in place via atomic rename.
+    """
     sid = str(scene.get("id"))
     title = scene.get("title") or f"scene {sid}"
     tag_names = {t.get("name") for t in (scene.get("tags") or []) if t.get("name")}
-    vf = build_filter_graph(tag_names, settings)
-
-    mp4, webp = find_preview_files(scene, generated_path)
+    vf_body = build_filter_graph(tag_names, settings)
 
     result: dict[str, Any] = {
         "scene_id": sid,
         "title": title,
-        "filter": vf,
+        "filter": vf_body,
         "mp4": None,
         "webp": None,
-        "status": "no_preview",
+        "status": "no_source",
         "errors": [],
     }
 
-    if not mp4 and not webp:
+    source = pick_source_file(scene)
+    if source is None:
+        # No source video path / duration — can't re-render from source.
+        return result
+    src_path, duration = source
+
+    mp4, webp = find_preview_files(scene, generated_path)
+    if mp4 is None:
+        # No existing preview → we don't know the right hash to write under.
+        # Require Stash's Generate → Preview to have run first so the path
+        # is deterministic.
+        result["status"] = "no_preview"
+        return result
+
+    # Skip already-processed scenes unless the user explicitly requested a
+    # reprocess. Marker lives next to the mp4.
+    if is_marked(mp4) and not settings["reprocess"]:
+        result["status"] = "skipped_marker"
+        result["mp4"] = {"status": "skipped_marker"}
         return result
 
     if settings["dryRun"]:
         result["status"] = "would_process"
-        if mp4:
-            result["mp4"] = {"path": str(mp4), "marked": is_marked(mp4)}
+        result["source"] = {"path": src_path, "duration": duration}
+        result["mp4"] = {"path": str(mp4)}
         if webp:
-            result["webp"] = {"path": str(webp), "marked": is_marked(webp)}
+            result["webp"] = {"path": str(webp)}
         return result
 
-    processed_any = False
-    skipped_any = False
+    mp4_ok, err, webp_ok = flatten_from_source(
+        src_path, duration, vf_body, mp4, webp, settings
+    )
 
-    if mp4:
-        if is_marked(mp4) and not settings["reprocess"]:
-            result["mp4"] = {"status": "skipped_marker"}
-            skipped_any = True
+    if mp4_ok:
+        write_marker(mp4)
+        if webp and webp_ok:
+            result["status"] = "flattened"
+            result["mp4"] = {"status": "flattened"}
+            result["webp"] = {"status": "flattened"}
+        elif webp and not webp_ok:
+            # mp4 succeeded, webp failed — still useful.
+            result["status"] = "partial"
+            result["mp4"] = {"status": "flattened"}
+            result["webp"] = {"status": "failed"}
+            result["errors"].append("webp transcode failed (mp4 is fine)")
         else:
-            ok, err = flatten_mp4(mp4, vf, settings)
-            if ok:
-                write_marker(mp4)
-                result["mp4"] = {"status": "flattened"}
-                processed_any = True
-            else:
-                result["mp4"] = {"status": "failed"}
-                result["errors"].append(f"mp4: {err}")
-
-    if webp:
-        if is_marked(webp) and not settings["reprocess"]:
-            result["webp"] = {"status": "skipped_marker"}
-            skipped_any = True
-        else:
-            ok, err = flatten_webp(webp, vf, settings)
-            if ok:
-                write_marker(webp)
-                result["webp"] = {"status": "flattened"}
-                processed_any = True
-            else:
-                result["webp"] = {"status": "failed"}
-                result["errors"].append(f"webp: {err}")
-
-    if result["errors"]:
-        result["status"] = "partial" if processed_any else "failed"
-    elif processed_any:
-        result["status"] = "flattened"
-    elif skipped_any:
-        result["status"] = "skipped_marker"
+            result["status"] = "flattened"
+            result["mp4"] = {"status": "flattened"}
     else:
-        result["status"] = "no_preview"
+        result["status"] = "failed"
+        result["mp4"] = {"status": "failed"}
+        result["errors"].append(err)
+
     return result
 
 
