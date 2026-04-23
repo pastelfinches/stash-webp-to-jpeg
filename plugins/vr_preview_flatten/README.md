@@ -1,6 +1,6 @@
 # VR Preview Flattener
 
-Regenerates scene preview videos for VR/AR scenes so they're watchable in a normal browser — crops one stereo eye and, when appropriate, unwraps the input projection (equirectangular / fisheye / 360°) with ffmpeg's `v360` filter.
+Regenerates scene animated previews for VR/AR scenes so they're watchable in a normal browser — re-renders each preview **from the source video**, cropping one stereo eye and (when appropriate) unwrapping the input projection (equirectangular / fisheye / 360°) with ffmpeg's `v360` filter. Output is stitched from N short segments spread across the source, matching Stash's own preview pattern.
 
 ## Why
 
@@ -11,24 +11,44 @@ Stash's built-in preview generator runs ffmpeg over the raw video file. For VR/A
 
 …so the hover-preview looks like two squashed fish-eyes. Meanwhile, pass-through clients like HereSphere or a VR headset render the raw file fine — it's only the library view in a normal browser that's unreadable.
 
-This plugin re-runs ffmpeg over Stash's *already-generated* preview file (not the source), applying a two-stage filter graph:
+## How it works
 
-1. **Crop one eye** — `crop=iw/2:ih:0:0` for side-by-side, `crop=iw:ih/2:0:0` for over/under.
-2. **Reproject** — `v360=hequirect:flat:…` for 180°/190°/200° equirect, `v360=equirect:flat:…` for 360°, `v360=fisheye:flat:…` for fisheye. Skipped when `defaultProjection=flat`.
+For each scene tagged `Virtual Reality` or `Augmented Reality`, the plugin:
 
-The result is overwritten in place at `<generated>/<hash>.mp4` and `<generated>/<hash>.webp`.
+1. Pulls the source video path + duration from Stash's GraphQL.
+2. Picks N segment offsets evenly spaced across the source (matching Stash's `previewSegments` / `previewSegmentDuration` config, default 12 × 0.75s = 9s total).
+3. For each segment, runs `ffmpeg -ss OFFSET -t DURATION -i SOURCE -vf <crop,v360,scale>` → writes a short encoded mp4 to a scratch dir.
+4. Concat-demuxes the segments into the final mp4 via `-c copy` (no re-encode) and overwrites `<generated>/screenshots/<hash>.mp4`.
+5. Transcodes the resulting mp4 → animated webp for `<generated>/screenshots/<hash>.webp`.
+
+The filter chain per segment:
+
+- **Crop one eye** — `crop=iw/2:ih:0:0` for side-by-side, `crop=iw:ih/2:0:0` for over/under.
+- **Reproject** — `v360=hequirect:flat:…` for 180°/190°/200° equirect, `v360=equirect:flat:…` for 360°, `v360=fisheye:flat:…` for fisheye. Skipped when `defaultProjection=flat`.
+- **Scale** — `scale=WIDTH:HEIGHT` to preview dimensions (default 960×720).
+
+Previous releases (v0.1 / v0.2) re-encoded Stash's already-downsampled preview instead of the source. That was visually mushy — a 640×320 preview has maybe 160 px of useful content per eye; no amount of CRF tuning recovers detail that isn't there. v0.3+ reads from source. **Upgrading from v0.2: `.vr_flat` markers from the old release are ignored; scenes will naturally re-flatten from source on the next run.**
 
 ## What this plugin touches (and what it doesn't)
 
-**Touches only derived preview files** at `$generated/<hash>.mp4` and `$generated/<hash>.webp`. These are the animated hover-previews Stash generates from your source video.
+**Touches:**
+- `$generated/screenshots/<hash>.mp4` — overwritten in place (atomic rename).
+- `$generated/screenshots/<hash>.webp` — overwritten in place.
+
+**Reads (never writes):**
+- The source video files listed in `scene.files[].path`. Opened read-only for short seek+extract passes (one 0.75-second window per segment).
 
 **Never touches:**
-- Source video files — never opened, not even for reading.
+- Source video files for writing — not modified, not moved, not re-muxed. Only read with `ffmpeg -ss ... -t ... -i SOURCE`.
 - The scrubber sprite (`_sprite.jpg` / `_thumbs.vtt`).
 - The scene screenshot / cover (`<hash>.jpg`).
 - Stash's database, ratings, tags, or any GraphQL state.
 
-A bad run at worst produces bad preview files. **Fix = Stash's "Generate → Preview" task**, which rebuilds previews from the source. No plugin-level backup is kept; previews are cheap to regenerate and backing them up would waste disk on every user.
+A bad run at worst produces bad preview files. **Fix = Stash's "Generate → Preview" task**, which rebuilds previews from source. No plugin-level backup is kept; previews are cheap to regenerate.
+
+## IO pressure
+
+Source-based flattening reads ~1.5 MB per scene (12 × 0.75s windows from an 8K H265 source). A 55-scene library pulls roughly 80 MB total — not a lot, but seek-heavy. On NVMe this is invisible; on NAS or spinning rust the seeks dominate wall time. Expect **~10–15 s per scene** at `preset medium`, or ~15 min for a 55-scene library; `preset slower` roughly doubles that.
 
 ## Safety rollout
 
@@ -91,28 +111,36 @@ Without any modifier tags, a VR/AR-only scene is assumed to be **SBS + equirecta
 | `defaultProjection` | string | `equirect` | `equirect` / `fisheye` / `flat`. `flat` skips reprojection (crops one eye only). |
 | `outputHFov` / `outputVFov` | number | `90` / `90` | Horizontal/vertical FOV of the flattened output in degrees. |
 | `ffmpegBin` / `ffprobeBin` | string | `ffmpeg` / `ffprobe` | Override if not on PATH. |
-| `crf` | number | `18` | x264 CRF for the re-encoded mp4 preview. Lower = bigger + sharper. 18 is near-visually-lossless on the second encode pass; bump to 15 if you still see quality loss. |
-| `preset` | string | `slower` | x264 preset. Previews are short and small, so encode speed barely matters — `slower` gives better compression at the same CRF. Drop to `medium` / `fast` if you want quicker runs. |
+| `outputWidth` / `outputHeight` | number | `960` / `720` | Pixel dimensions of the flattened preview after scaling. |
+| `segments` | number | `0` (= inherit) | Number of short clips stitched together. `0` inherits Stash's own `previewSegments` config (typically 12). |
+| `segmentDuration` | number | `0` (= inherit) | Duration of each segment in seconds. `0` inherits Stash's `previewSegmentDuration` (typically 0.75s). |
+| `crf` | number | `18` | x264 CRF for the re-encoded mp4. Lower = bigger + sharper. 18 is near-visually-lossless. |
+| `preset` | string | `medium` | x264 preset. `medium` balances quality vs. speed for source-based flattening; `slower` gains a little compression efficiency for ~2× encode time. |
 
 ## Idempotency
 
-After flattening a preview, the plugin writes a zero-byte sidecar next to it — e.g. `abc123.mp4.vr_flat` alongside `abc123.mp4`. On re-run, any preview with a sidecar is skipped unless **Reprocess** is enabled.
+After flattening a preview, the plugin writes a zero-byte sidecar next to it — e.g. `abc123.mp4.vr_flat_v2` alongside `abc123.mp4`. On re-run, any preview with a sidecar is skipped unless **Reprocess** is enabled.
 
-Stash's Generate task overwrites the preview but leaves the sidecar behind; that gives you a false-positive "already flattened" skip. **After running Generate, either turn on Reprocess for one flatten pass, or delete `*.vr_flat` from the generated directory first.**
+Stash's Generate task overwrites the preview but leaves the sidecar behind; that gives you a false-positive "already flattened" skip. **After running Generate, either turn on Reprocess for one flatten pass, or delete `*.vr_flat_v2` from the generated directory first.**
+
+(Upgrading from v0.2 or earlier: the old `.vr_flat` markers are intentionally ignored by v0.3+, so an upgrade triggers a fresh source-based re-flatten on the next run.)
 
 ## Caveats
 
-- **Regenerate overwrites you.** This is accepted — re-run the task afterward.
+- **Regenerate overwrites you.** Stash's "Generate → Preview" task rewrites the preview from source without this plugin's filter chain. Re-run the plugin afterward to re-flatten.
 - **Scrubber sprite (the thumbnail strip) and screenshot (single-frame cover) are not touched.** The scrubber will still display SBS thumbnails. If you want those fixed too, that's a follow-up.
-- **Lossy re-encode.** The output mp4 is re-encoded with libx264 at the configured CRF. Previews are already aggressively compressed, so quality loss from a second pass is usually invisible at preview resolutions — but it's not zero.
 - **Tag hygiene matters.** A scene marked "Virtual Reality" but actually encoded flat 2D will get cropped in half. Use Dry Run first on a new library to spot outliers via the filter-usage breakdown.
 - **Fisheye + higher-FOV combos:** the plugin passes `ih_fov=iv_fov=<tag>` to `v360`. Lenses with a non-square FOV (e.g. 200° horizontal / 180° vertical) aren't represented in StashDB tags and will be slightly off — usable, but not perfect.
-- **Only the `.mp4` and `.webp` animated previews are processed.** If you've disabled preview generation and only have sprites, there's nothing for this plugin to do.
+- **Needs an existing preview file on disk** to know where to write. Run Stash's "Generate → Preview" over new scenes first; the plugin overwrites the preview at its existing hash-derived path.
+- **Source path must be reachable from the Stash process.** The plugin uses `scene.files[].path` exactly as Stash reports it, which means that path must exist inside whatever filesystem Stash is running on (containerised Stash: `/data/...` style paths).
 
 ## How it works
 
 1. Resolve the VR / AR tag names → tag IDs via `findTag`.
-2. `findScenes` with `tags INCLUDES [vr_id, ar_id]`, paginated at 200/page.
-3. `configuration.general.generatedPath` → locate the preview directory.
-4. Per scene: collect every fingerprint value (oshash, MD5, phash), stat `<generated>/<hash>.mp4` and `<generated>/<hash>.webp` until one hits.
-5. Build the filter graph from the scene's tags; run ffmpeg to `<preview>.tmp.mp4` / `<preview>.tmp.webp`, then atomic-rename over the original and write a `.vr_flat` sidecar.
+2. `findScenes` with `tags INCLUDES [vr_id, ar_id]`, paginated at 200/page. Query pulls `files { path duration fingerprints }` for each scene.
+3. Per scene: pick first file with a path + positive duration; locate the existing preview at `<generated>/screenshots/<hash>.mp4`.
+4. Build the per-scene filter graph from the scene's tags.
+5. Extract N segments from the source via `ffmpeg -ss … -t … -i SOURCE -vf <filter,scale>`; each lands as a short mp4 in a scratch dir.
+6. Concat-demux the segments into the final mp4 with `-c copy` (no re-encode).
+7. Transcode the final mp4 → animated webp for the `.webp` preview.
+8. Atomic-rename over the originals and write a `.vr_flat_v2` sidecar.

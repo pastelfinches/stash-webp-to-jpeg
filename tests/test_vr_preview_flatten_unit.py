@@ -96,11 +96,13 @@ class TestFovFromTags:
 
 class TestBuildFilterGraph:
     def test_sbs_equirect_180_is_default(self):
-        # VR/AR only, no modifier tags → most common VR encoding
+        # VR/AR only, no modifier tags → most common VR encoding.
+        # Default output FOV is 120x90 (wide-ish, avoids severe flat-
+        # projection edge distortion past ~130° horizontal).
         vf = vpf.build_filter_graph(set(), _settings())
         assert vf == (
             "crop=iw/2:ih:0:0,"
-            "v360=hequirect:flat:ih_fov=180:iv_fov=180:h_fov=90:v_fov=90"
+            "v360=hequirect:flat:ih_fov=180:iv_fov=180:h_fov=120:v_fov=90"
         )
 
     def test_ou_layout_changes_crop(self):
@@ -178,11 +180,89 @@ def fake_stash(plugin_config: dict[str, Any] | None = None) -> StashInterface:
     return cast(StashInterface, FakeStash(plugin_config))
 
 
+class FakeStashWithGeneral:
+    """FakeStash variant that also exposes the `general` section.
+
+    Used for tests that exercise Stash-config inheritance (e.g. segments /
+    segmentDuration falling back to previewSegments / previewSegmentDuration).
+    """
+
+    def __init__(
+        self,
+        plugin_config: dict[str, Any] | None = None,
+        general: dict[str, Any] | None = None,
+    ) -> None:
+        self._cfg = {
+            "plugins": {vpf.PLUGIN_ID: plugin_config or {}},
+            "general": general or {},
+        }
+
+    def get_configuration(self) -> dict[str, Any]:
+        return self._cfg
+
+
+def fake_stash_with_general(
+    plugin_config: dict[str, Any] | None = None,
+    general: dict[str, Any] | None = None,
+) -> StashInterface:
+    return cast(StashInterface, FakeStashWithGeneral(plugin_config, general))
+
+
 class TestLoadSettings:
     def test_empty_config_yields_defaults(self):
+        # `segments` / `segmentDuration` have a 0 sentinel in DEFAULTS that
+        # load_settings resolves against Stash's own `preview*` config (or
+        # a fallback constant when Stash config is blank). Skip those keys
+        # in this assertion; they get their own dedicated tests below.
         s = vpf.load_settings(fake_stash())
+        inherited = {"segments", "segmentDuration"}
         for key, expected in vpf.DEFAULTS.items():
+            if key in inherited:
+                continue
             assert s[key] == expected, f"default drift for {key}"
+
+    def test_segments_inherit_fallback_when_stash_unset(self):
+        s = vpf.load_settings(fake_stash())
+        assert s["segments"] == vpf._FALLBACK_SEGMENTS
+        assert s["segmentDuration"] == vpf._FALLBACK_SEGMENT_DURATION
+
+    def test_segments_explicit_plugin_override_wins(self):
+        s = vpf.load_settings(fake_stash({"segments": 8, "segmentDuration": 1.0}))
+        assert s["segments"] == 8
+        assert s["segmentDuration"] == 1.0
+
+    def test_segments_inherit_from_stash_preview_config(self):
+        # Stash's preview generator has 20 × 0.5s configured — plugin should
+        # track that when segments/segmentDuration are left at 0.
+        s = vpf.load_settings(
+            fake_stash_with_general(
+                general={"previewSegments": 20, "previewSegmentDuration": 0.5}
+            )
+        )
+        assert s["segments"] == 20
+        assert s["segmentDuration"] == 0.5
+
+
+class TestSegmentOffsets:
+    def test_evenly_spaced_for_long_video(self):
+        # 3600s video, 12 segments of 0.75s → offsets centred in 300s windows
+        offs = vpf.segment_offsets(3600.0, 12, 0.75)
+        assert len(offs) == 12
+        # First offset: window 0..300, centre 150, start = 150 - 0.375 = 149.625
+        assert offs[0] == pytest.approx(149.625, abs=0.01)
+        # Last offset: window 3300..3600, centre 3450, start = 3450 - 0.375
+        assert offs[-1] == pytest.approx(3449.625, abs=0.01)
+        # Monotonically increasing
+        assert all(offs[i] < offs[i + 1] for i in range(len(offs) - 1))
+
+    def test_packs_segments_for_very_short_video(self):
+        # 5s video, 12 × 0.75s = 9s requested — doesn't fit spaced.
+        # Falls back to sequential packing so segments don't overlap.
+        offs = vpf.segment_offsets(5.0, 12, 0.75)
+        assert offs == [i * 0.75 for i in range(12)]
+
+    def test_handles_zero_duration(self):
+        assert vpf.segment_offsets(0.0, 12, 0.75) == [0.0]
 
     def test_zero_number_uses_default(self):
         # Stash NUMBER type renders unset fields as 0 in the UI
