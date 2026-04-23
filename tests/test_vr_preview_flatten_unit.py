@@ -231,6 +231,23 @@ class TestLoadSettings:
         assert s["segments"] == 8
         assert s["segmentDuration"] == 1.0
 
+    def test_ffmpeg_threads_default_and_explicit_zero(self):
+        # Default is 4 (capped to prevent decoder memory spikes).
+        s = vpf.load_settings(fake_stash())
+        assert s["ffmpegThreads"] == 4
+        # Explicit 0 means "let ffmpeg auto-pick" — honoured, not replaced.
+        s0 = vpf.load_settings(fake_stash({"ffmpegThreads": 0}))
+        assert s0["ffmpegThreads"] == 0
+        # Out-of-range clamps to default.
+        s_bad = vpf.load_settings(fake_stash({"ffmpegThreads": 999}))
+        assert s_bad["ffmpegThreads"] == 4
+
+    def test_workers_default_is_one(self):
+        # Source-based flatten needs a single-worker default so a fresh
+        # install doesn't OOM a default-sized Stash container.
+        s = vpf.load_settings(fake_stash())
+        assert s["workers"] == 1
+
     def test_segments_inherit_from_stash_preview_config(self):
         # Stash's preview generator has 20 × 0.5s configured — plugin should
         # track that when segments/segmentDuration are left at 0.
