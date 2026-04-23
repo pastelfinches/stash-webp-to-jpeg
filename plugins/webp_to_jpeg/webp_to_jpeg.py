@@ -350,6 +350,80 @@ def run_conversion(
     return summary
 
 
+def run_hook(
+    stash: StashInterface, conn: dict[str, Any], settings: dict[str, Any], args: dict[str, Any]
+) -> None:
+    """Handle a Scene.Update.Post or Scene.Create.Post hook invocation.
+
+    Fetches the single scene's cover, checks if it's WEBP, and converts it.
+    The thread pool and progress reporting used by the bulk task are not needed
+    here — we always process exactly one scene.
+    """
+    hook_ctx = args.get("hookContext") or {}
+    trigger = hook_ctx.get("type", "")
+    input_fields: list[str] = hook_ctx.get("inputFields") or []
+    hook_input: dict[str, Any] = hook_ctx.get("input") or {}
+
+    # Filter: for Update we only care when the cover was actually changed.
+    # For Create, inputFields population is uncertain; fall back to checking
+    # whether input.cover_image is truthy.
+    if trigger == "Scene.Update.Post":
+        if "cover_image" not in input_fields:
+            log.debug("Hook skipped: cover_image not in inputFields")
+            print(json.dumps({"output": "skipped: cover_image not in inputFields"}))
+            return
+    elif trigger == "Scene.Create.Post":
+        if not hook_input.get("cover_image"):
+            log.debug("Hook skipped: cover_image not present in input")
+            print(json.dumps({"output": "skipped: cover_image not present in input"}))
+            return
+    else:
+        log.debug(f"Hook skipped: unexpected trigger type '{trigger}'")
+        print(json.dumps({"output": f"skipped: unexpected trigger '{trigger}'"}))
+        return
+
+    scene_id = hook_ctx.get("id")
+    if not scene_id:
+        log.error("Hook: hookContext.id missing")
+        print(json.dumps({"output": None, "error": "hookContext.id missing"}))
+        sys.exit(1)
+
+    sid = str(scene_id)
+    dry_run = settings["dryRun"]
+    quality = settings["jpegQuality"]
+
+    if dry_run:
+        log.info(f"Hook dry run — would process scene {sid}")
+
+    log.info(f"Hook triggered ({trigger}) for scene {sid}")
+    headers = auth_headers(conn)
+    result = _process_scene(sid, conn, headers, stash, quality, dry_run)
+
+    status = result["status"]
+    if status == "converted":
+        msg = f"Scene {sid}: converted WEBP cover to JPEG"
+        log.info(msg)
+        print(json.dumps({"output": msg}))
+    elif status == "would_convert":
+        msg = f"Scene {sid}: dry run — would convert WEBP cover to JPEG"
+        log.info(msg)
+        print(json.dumps({"output": msg}))
+    elif status == "not_webp":
+        msg = f"Scene {sid}: cover is not WEBP, nothing to do"
+        log.debug(msg)
+        print(json.dumps({"output": msg}))
+    elif status == "fetch_failed":
+        err = f"Scene {sid}: could not fetch cover image"
+        log.warning(err)
+        print(json.dumps({"error": err}))
+        sys.exit(1)
+    else:
+        err = f"Scene {sid}: {status}"
+        log.error(err)
+        print(json.dumps({"output": None, "error": err}))
+        sys.exit(1)
+
+
 def main() -> None:
     raw = sys.stdin.read()
     if not raw.strip():
@@ -377,6 +451,15 @@ def main() -> None:
             print(json.dumps({"output": summary}))
         except Exception as e:
             log.error(f"Task failed: {e}")
+            print(json.dumps({"output": None, "error": str(e)}))
+            sys.exit(1)
+    elif mode == "hook":
+        try:
+            run_hook(stash, conn, settings, args)
+        except SystemExit:
+            raise
+        except Exception as e:
+            log.error(f"Hook failed: {e}")
             print(json.dumps({"output": None, "error": str(e)}))
             sys.exit(1)
     else:
