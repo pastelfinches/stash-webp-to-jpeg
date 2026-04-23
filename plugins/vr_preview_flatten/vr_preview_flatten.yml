@@ -1,0 +1,97 @@
+name: VR Preview Flattener
+description: Re-render scene preview videos for VR/AR scenes — crop one eye and (optionally) unwrap fisheye/equirectangular projection so hover-previews are watchable in a normal browser. Manual task only; StashDB tags drive per-scene strategy.
+version: 0.1.0
+url: https://github.com/pastelfinches/stash-plugins
+# requires: PythonDepManager
+
+exec:
+  - python
+  - "{pluginDir}/vr_preview_flatten.py"
+
+interface: raw
+
+errLog: info
+
+tasks:
+  - name: Flatten VR Previews
+    description: Scan scenes tagged as VR/AR and regenerate their animated preview (mp4 + webp) flattened to a single eye. Enable "Dry Run" to preview the plan without running ffmpeg.
+    defaultArgs:
+      mode: flatten
+
+settings:
+  dryRun:
+    displayName: Dry Run
+    description: List scenes that would be processed and print their ffmpeg filter graphs without writing anything.
+    type: BOOLEAN
+  reprocess:
+    displayName: Reprocess already-flattened previews
+    description: Default is to skip previews that carry the plugin's "vr_flattened" metadata marker. Turn this on to re-run (e.g. after changing the output FOV).
+    type: BOOLEAN
+  limit:
+    displayName: Limit scenes per run (leave 0 for no limit)
+    description: Stop after processing this many scenes. Use a small number (5, 10) when first testing the plugin on a library you can't replace.
+    type: NUMBER
+  workers:
+    displayName: Worker threads (leave 0 for default)
+    description: Number of scenes processed in parallel. ffmpeg is CPU-heavy — keep this low (default 2).
+    type: NUMBER
+  virtualRealityTag:
+    displayName: Virtual Reality tag name
+    description: StashDB tag that marks a scene as VR. Default "Virtual Reality".
+    type: STRING
+  augmentedRealityTag:
+    displayName: Augmented Reality tag name
+    description: StashDB tag that marks a scene as AR. Default "Augmented Reality". Leave blank to ignore AR scenes.
+    type: STRING
+  fisheyeTag:
+    displayName: Fisheye tag name
+    description: If this tag is present, the input is treated as fisheye projection (v360=fisheye) instead of equirectangular. Default "Fisheye".
+    type: STRING
+  topBottomTag:
+    displayName: Top/Bottom stereo tag name
+    description: If present, stereo layout is Over/Under instead of Side-by-Side. Default "Top-Bottom".
+    type: STRING
+  fov180Tag:
+    displayName: 180° FOV tag name
+    description: Marks a scene as 180° field of view. Default "180°".
+    type: STRING
+  fov190Tag:
+    displayName: 190° FOV tag name
+    description: Marks a scene as 190° field of view. Default "190°".
+    type: STRING
+  fov200Tag:
+    displayName: 200° FOV tag name
+    description: Marks a scene as 200° field of view (MKX200, VRCA220). Default "200°".
+    type: STRING
+  fov360Tag:
+    displayName: 360° FOV tag name
+    description: Marks a scene as full 360° equirectangular. Default "360°".
+    type: STRING
+  defaultFov:
+    displayName: Default FOV when no FOV tag is present (leave 0 for default)
+    description: Assumed input field of view in degrees when the scene has no FOV tag. Default 180.
+    type: NUMBER
+  defaultProjection:
+    displayName: Default projection (equirect | fisheye | flat)
+    description: Projection assumed when no Fisheye tag is present. "equirect" (default) uses v360=hequirect/equirect; "fisheye" uses v360=fisheye; "flat" skips reprojection and only crops one eye.
+    type: STRING
+  outputHFov:
+    displayName: Output horizontal FOV in degrees (leave 0 for default)
+    description: Horizontal field of view of the flattened preview. Default 90 (a natural "forward-facing" view).
+    type: NUMBER
+  outputVFov:
+    displayName: Output vertical FOV in degrees (leave 0 for default)
+    description: Vertical field of view of the flattened preview. Default 90.
+    type: NUMBER
+  ffmpegBin:
+    displayName: ffmpeg binary path
+    description: Path to ffmpeg. Leave blank to use "ffmpeg" from PATH. Set this if Stash runs in a container that keeps ffmpeg outside PATH.
+    type: STRING
+  ffprobeBin:
+    displayName: ffprobe binary path
+    description: Path to ffprobe. Leave blank to use "ffprobe" from PATH.
+    type: STRING
+  crf:
+    displayName: Output CRF (leave 0 for default)
+    description: x264 CRF quality for the re-encoded preview. Default 23. Lower = larger & higher quality.
+    type: NUMBER

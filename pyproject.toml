@@ -29,7 +29,7 @@ exclude = [
 ]
 # Each plugin directory goes on sys.path at test time (see tests/conftest.py);
 # teach pyright the same so `import webp_to_jpeg` resolves during analysis.
-extraPaths = ["plugins/webp_to_jpeg"]
+extraPaths = ["plugins/webp_to_jpeg", "plugins/vr_preview_flatten"]
 pythonVersion = "3.10"
 typeCheckingMode = "basic"
 # Plugins target Stash's embedded Python, which can't pin a single version —
