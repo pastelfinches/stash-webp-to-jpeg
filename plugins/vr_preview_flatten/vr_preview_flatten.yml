@@ -1,6 +1,6 @@
 name: VR Preview Flattener
 description: Re-render scene animated previews for VR/AR scenes by reading the source video, cropping one stereo eye, and reprojecting via ffmpeg v360. Multi-segment output matches Stash's own preview pattern. Manual task only; StashDB tags drive per-scene strategy.
-version: 0.3.0
+version: 0.3.1
 url: https://github.com/pastelfinches/stash-plugins
 # requires: PythonDepManager
 
@@ -33,7 +33,11 @@ settings:
     type: NUMBER
   workers:
     displayName: Worker threads (leave 0 for default)
-    description: Number of scenes processed in parallel. ffmpeg is CPU-heavy — keep this low (default 2).
+    description: Number of scenes processed in parallel. Default 1 — source-based flatten decodes 4K/8K video and each concurrent worker holds ~1 GB of decoder state. Raising past 1 on a container with less than ~8 GB RAM risks OOM. On a beefy host with 16+ GB of free memory, 2–3 is safe.
+    type: NUMBER
+  ffmpegThreads:
+    displayName: ffmpeg thread cap (leave 0 for default)
+    description: Caps ffmpeg's internal decoder+encoder parallelism via `-threads N`. Default 4 — a reasonable balance for 8K HEVC decode plus libx264 encode. Set 0 to let ffmpeg auto-pick (can spike memory on high-core hosts).
     type: NUMBER
   virtualRealityTag:
     displayName: Virtual Reality tag name

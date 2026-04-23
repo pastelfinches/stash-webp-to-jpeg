@@ -113,7 +113,12 @@ DEFAULTS: dict[str, Any] = {
     "dryRun": False,
     "reprocess": False,
     "limit": 0,
-    "workers": 2,
+    # Source-based flattening runs ffmpeg against the raw 4K/8K source.
+    # A single decoder can hold >1 GB of frame data; two concurrent workers
+    # will OOM a default-sized Stash container (~4 GB memory limit). Keep
+    # the default at 1 and let users raise it if they have headroom.
+    "workers": 1,
+    "ffmpegThreads": 4,
     "virtualRealityTag": "Virtual Reality",
     "augmentedRealityTag": "Augmented Reality",
     "fisheyeTag": "Fisheye",
@@ -168,6 +173,7 @@ def load_settings(stash: StashInterface) -> dict[str, Any]:
     # NUMBER settings: treat 0/missing/out-of-range as "use default".
     for key, lo, hi in (
         ("workers", 1, 32),
+        ("ffmpegThreads", 0, 32),
         ("defaultFov", 90, 360),
         ("outputHFov", 30, 180),
         ("outputVFov", 30, 180),
@@ -529,7 +535,16 @@ def _extract_segment(
     settings: dict[str, Any],
     out_path: Path,
 ) -> tuple[bool, str]:
-    """Decode a single segment from the source, apply filter, re-encode."""
+    """Decode a single segment from the source, apply filter, re-encode.
+
+    `-threads N` caps ffmpeg's internal decoder+filter+encoder parallelism.
+    Default 4 — large enough to hide H.264 decoder latency on a modern
+    8-core box, small enough to keep a single 8K HEVC source decode below
+    ~1 GB RSS. Plugin-level workers>1 multiplies this, so a user who
+    wants high throughput should raise workers first, threads second.
+    """
+    threads = int(settings.get("ffmpegThreads") or 0)
+    thread_args = ["-threads", str(threads)] if threads > 0 else []
     cmd = [
         settings["ffmpegBin"],
         "-y",
@@ -537,6 +552,7 @@ def _extract_segment(
         "-hide_banner",
         "-loglevel",
         "error",
+        *thread_args,
         "-ss",
         f"{offset:.3f}",
         "-t",
@@ -556,6 +572,7 @@ def _extract_segment(
         "high",
         "-pix_fmt",
         "yuv420p",
+        *thread_args,
         str(out_path),
     ]
     rc, err = _run_ffmpeg(cmd)

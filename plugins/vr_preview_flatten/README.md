@@ -46,9 +46,13 @@ Previous releases (v0.1 / v0.2) re-encoded Stash's already-downsampled preview i
 
 A bad run at worst produces bad preview files. **Fix = Stash's "Generate → Preview" task**, which rebuilds previews from source. No plugin-level backup is kept; previews are cheap to regenerate.
 
-## IO pressure
+## IO & memory pressure
 
-Source-based flattening reads ~1.5 MB per scene (12 × 0.75s windows from an 8K H265 source). A 55-scene library pulls roughly 80 MB total — not a lot, but seek-heavy. On NVMe this is invisible; on NAS or spinning rust the seeks dominate wall time. Expect **~10–15 s per scene** at `preset medium`, or ~15 min for a 55-scene library; `preset slower` roughly doubles that.
+**IO:** Source-based flattening reads ~1.5 MB per scene (12 × 0.75s windows from an 8K H.265 source). A 55-scene library pulls roughly 80 MB total — not a lot, but seek-heavy. On NVMe this is invisible; on NAS or spinning rust the seeks dominate wall time.
+
+**Memory:** An 8K HEVC decoder + libx264 encoder with `-threads 4` peaks around **2.5–3 GB RSS** per running ffmpeg. Default `workers=1` stays under the 4 GB memory limit a container-deployed Stash typically has. Raising workers multiplies this roughly linearly — on a 4 GB Stash container, `workers: 2` will OOM-kill Stash mid-run. If your Stash is on a beefy bare-metal host with RAM to spare, 2–3 workers is fine; otherwise leave `workers: 1`.
+
+**Wall time:** ~70–90 s per scene at `preset medium` with `workers: 1` on an 8K source. A 55-scene library takes ~75 min serially; running `workers: 2` roughly halves that on a host with sufficient RAM.
 
 ## Safety rollout
 
@@ -116,6 +120,8 @@ Without any modifier tags, a VR/AR-only scene is assumed to be **SBS + equirecta
 | `segmentDuration` | number | `0` (= inherit) | Duration of each segment in seconds. `0` inherits Stash's `previewSegmentDuration` (typically 0.75s). |
 | `crf` | number | `18` | x264 CRF for the re-encoded mp4. Lower = bigger + sharper. 18 is near-visually-lossless. |
 | `preset` | string | `medium` | x264 preset. `medium` balances quality vs. speed for source-based flattening; `slower` gains a little compression efficiency for ~2× encode time. |
+| `workers` | number | `1` | Scenes processed in parallel. Each worker decodes a 4K/8K source and can hold >1 GB of decoder state. **Default 1** to avoid OOM on default-sized Stash containers. Raise to 2–3 on hosts with 16+ GB free RAM. |
+| `ffmpegThreads` | number | `4` | `-threads N` cap on ffmpeg's internal parallelism. Default 4 keeps 8K HEVC decode ≤~1 GB RSS. Set 0 to let ffmpeg auto-pick (can spike memory on high-core hosts). |
 
 ## Idempotency
 
