@@ -226,6 +226,10 @@ def find_scenes_for_tags(
     """
     if not tag_ids:
         return []
+    # Modern Stash (>=0.20) dropped top-level Scene.oshash/Scene.checksum —
+    # fingerprints live only under files[].fingerprints now. Querying the
+    # removed fields raises GRAPHQL_VALIDATION_FAILED rather than being
+    # silently tolerated, which breaks the whole query.
     query = """
     query FindScenes($filter: FindFilterType, $scene_filter: SceneFilterType) {
       findScenes(filter: $filter, scene_filter: $scene_filter) {
@@ -233,8 +237,6 @@ def find_scenes_for_tags(
         scenes {
           id
           title
-          oshash
-          checksum
           files { fingerprints { type value } }
           tags { id name }
         }
@@ -258,6 +260,14 @@ def find_scenes_for_tags(
                 "scene_filter": scene_filter,
             },
         )
+        if not data or not data.get("findScenes"):
+            # stashapi returns None when the server reports GraphQL errors,
+            # which would otherwise crash below with a confusing NoneType
+            # subscript error. Surface the real failure to the task log.
+            raise RuntimeError(
+                "findScenes returned no data — check earlier log lines for "
+                "GRAPHQL_VALIDATION_FAILED messages."
+            )
         batch = data["findScenes"]["scenes"]
         out.extend(batch)
         if len(batch) < per_page:
@@ -273,6 +283,11 @@ def scene_checksums(scene: dict[str, Any]) -> list[str]:
     is whichever hash was chosen when the preview was generated. The field
     varies across setups (oshash vs MD5 vs phash-based), so we try all of
     them and stat the filesystem to find the match.
+
+    The top-level `oshash`/`checksum` lookup is a defensive fallback: modern
+    Stash returns only `files[].fingerprints`, but if a caller shapes input
+    dicts with those keys directly (e.g. tests, older Stash responses), use
+    them too.
     """
     values: list[str] = []
     seen: set[str] = set()
