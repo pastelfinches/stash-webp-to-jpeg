@@ -1,6 +1,6 @@
 name: VR Preview Flattener
 description: Re-render scene preview videos for VR/AR scenes — crop one eye and (optionally) unwrap fisheye/equirectangular projection so hover-previews are watchable in a normal browser. Manual task only; StashDB tags drive per-scene strategy.
-version: 0.1.0
+version: 0.2.0
 url: https://github.com/pastelfinches/stash-plugins
 # requires: PythonDepManager
 
@@ -93,5 +93,9 @@ settings:
     type: STRING
   crf:
     displayName: Output CRF (leave 0 for default)
-    description: x264 CRF quality for the re-encoded preview. Default 23. Lower = larger & higher quality.
+    description: x264 CRF quality for the re-encoded preview. Default 18 (near-visually-lossless on second encode pass). Lower = larger & higher quality. Range 1-51.
     type: NUMBER
+  preset:
+    displayName: x264 preset
+    description: ffmpeg x264 preset. Default "slower" (previews are small/short, so encode speed doesn't matter; better compression = better quality at the same CRF). Options ultrafast / superfast / veryfast / faster / fast / medium / slow / slower / veryslow.
+    type: STRING

@@ -91,7 +91,8 @@ Without any modifier tags, a VR/AR-only scene is assumed to be **SBS + equirecta
 | `defaultProjection` | string | `equirect` | `equirect` / `fisheye` / `flat`. `flat` skips reprojection (crops one eye only). |
 | `outputHFov` / `outputVFov` | number | `90` / `90` | Horizontal/vertical FOV of the flattened output in degrees. |
 | `ffmpegBin` / `ffprobeBin` | string | `ffmpeg` / `ffprobe` | Override if not on PATH. |
-| `crf` | number | `23` | x264 CRF for the re-encoded mp4 preview. Lower = bigger + sharper. |
+| `crf` | number | `18` | x264 CRF for the re-encoded mp4 preview. Lower = bigger + sharper. 18 is near-visually-lossless on the second encode pass; bump to 15 if you still see quality loss. |
+| `preset` | string | `slower` | x264 preset. Previews are short and small, so encode speed barely matters — `slower` gives better compression at the same CRF. Drop to `medium` / `fast` if you want quicker runs. |
 
 ## Idempotency
 
