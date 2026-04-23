@@ -124,7 +124,8 @@ DEFAULTS: dict[str, Any] = {
     "outputVFov": 90,
     "ffmpegBin": "ffmpeg",
     "ffprobeBin": "ffprobe",
-    "crf": 23,
+    "crf": 18,
+    "preset": "slower",
 }
 
 
@@ -176,6 +177,7 @@ def load_settings(stash: StashInterface) -> dict[str, Any]:
         "ffmpegBin",
         "ffprobeBin",
         "defaultProjection",
+        "preset",
     ):
         v = str(merged.get(key) or "").strip()
         merged[key] = v or str(DEFAULTS[key])
@@ -310,20 +312,28 @@ def find_preview_files(
 ) -> tuple[Path | None, Path | None]:
     """Locate the on-disk animated preview (mp4) and webp preview for a scene.
 
+    Stash stores these as `<generated>/screenshots/<checksum>.{mp4,webp}`.
+    Older or patched layouts may place them directly under `<generated>/`, so
+    we try both and return the first hit for each format.
+
     Returns (mp4_path_or_none, webp_path_or_none).
     """
     gp = Path(generated_path)
+    search_dirs = [gp / "screenshots", gp]
     mp4_path: Path | None = None
     webp_path: Path | None = None
     for c in scene_checksums(scene):
-        if mp4_path is None:
-            cand = gp / f"{c}.mp4"
-            if cand.exists():
-                mp4_path = cand
-        if webp_path is None:
-            cand = gp / f"{c}.webp"
-            if cand.exists():
-                webp_path = cand
+        for base in search_dirs:
+            if mp4_path is None:
+                cand = base / f"{c}.mp4"
+                if cand.exists():
+                    mp4_path = cand
+            if webp_path is None:
+                cand = base / f"{c}.webp"
+                if cand.exists():
+                    webp_path = cand
+            if mp4_path and webp_path:
+                break
         if mp4_path and webp_path:
             break
     return mp4_path, webp_path
@@ -426,7 +436,14 @@ def _run_ffmpeg(cmd: list[str]) -> tuple[int, str]:
 def flatten_mp4(
     src: Path, vf: str, settings: dict[str, Any]
 ) -> tuple[bool, str]:
-    """Re-encode the animated mp4 preview with the filter graph applied."""
+    """Re-encode the animated mp4 preview with the filter graph applied.
+
+    Previews are short (~10s) and small (~300KB). Quality matters more than
+    encode speed here — the file is already a lossy artifact of Stash's own
+    preview generation, so we're on the second encode pass and the margin
+    for further degradation is thin. Default to CRF 18 + slower preset; the
+    per-scene time cost is tens of milliseconds.
+    """
     tmp = src.with_suffix(src.suffix + ".tmp.mp4")
     cmd = [
         settings["ffmpegBin"],
@@ -443,9 +460,13 @@ def flatten_mp4(
         "-c:v",
         "libx264",
         "-preset",
-        "veryfast",
+        settings["preset"],
         "-crf",
         str(settings["crf"]),
+        "-profile:v",
+        "high",
+        "-pix_fmt",
+        "yuv420p",
         "-movflags",
         "+faststart",
         str(tmp),
