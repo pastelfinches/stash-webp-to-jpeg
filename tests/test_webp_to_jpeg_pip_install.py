@@ -13,10 +13,8 @@ from __future__ import annotations
 
 import subprocess
 import sys
-from pathlib import Path
 
 import pytest
-
 import webp_to_jpeg as w2j
 
 

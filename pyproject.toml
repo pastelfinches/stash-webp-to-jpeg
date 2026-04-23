@@ -1,0 +1,39 @@
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+extend-exclude = ["_site", ".venv", "tests/sandbox/stash-data", "tests/sandbox/test_plugins"]
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "UP",  # pyupgrade
+    "B",   # flake8-bugbear
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests may import fixtures purely for side effects and intentionally
+# assert against broad Exception when the exact type isn't the contract.
+"tests/**" = ["B017"]
+
+[tool.pyright]
+include = ["plugins", "tests"]
+exclude = [
+    "**/__pycache__",
+    "**/.venv",
+    "**/_site",
+    "tests/sandbox/stash-data",
+    "tests/sandbox/test_plugins",
+]
+# Each plugin directory goes on sys.path at test time (see tests/conftest.py);
+# teach pyright the same so `import webp_to_jpeg` resolves during analysis.
+extraPaths = ["plugins/webp_to_jpeg"]
+pythonVersion = "3.10"
+typeCheckingMode = "basic"
+# Plugins target Stash's embedded Python, which can't pin a single version —
+# keep this tolerant. We opt into strict rules selectively below.
+reportMissingImports = "error"
+reportMissingTypeStubs = "none"
+reportUnusedImport = "none"

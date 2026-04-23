@@ -8,14 +8,16 @@ the new bytes via the sceneUpdate mutation (cover_image data URL).
 from __future__ import annotations
 
 import base64
+import contextlib
 import io
 import json
 import sys
 import urllib.error
 import urllib.request
-from typing import Any
+from typing import Any, NoReturn
 
-def _emit_fatal(message: str) -> None:
+
+def _emit_fatal(message: str) -> NoReturn:
     """Emit a fatal error using Stash's log framing and PluginOutput schema.
 
     Stash's task UI reports plugins as successful when the process exits
@@ -24,10 +26,8 @@ def _emit_fatal(message: str) -> None:
     """
     sys.stderr.write(f"\x01e\x02{message}\n")
     sys.stderr.flush()
-    try:
+    with contextlib.suppress(Exception):
         print(json.dumps({"output": None, "error": message}), flush=True)
-    except Exception:
-        pass
     sys.exit(1)
 
 
@@ -74,8 +74,8 @@ def _install_deps_via_pip() -> None:
 
 def _deps_already_importable() -> bool:
     try:
-        import stashapi  # noqa: F401
         import PIL  # noqa: F401
+        import stashapi  # noqa: F401
 
         return True
     except ImportError:
@@ -117,8 +117,8 @@ except Exception as e:  # noqa: BLE001
 
 try:
     import stashapi.log as log
-    from stashapi.stashapp import StashInterface
     from PIL import Image
+    from stashapi.stashapp import StashInterface
 except ImportError as e:
     _emit_fatal(
         f"Missing dependency: {e.name}. Install the PythonDepManager plugin "

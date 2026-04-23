@@ -51,6 +51,16 @@ pip install -r tests/requirements-test.txt
 pytest tests/test_*.py
 ```
 
+Lint and type-check (same checks CI runs):
+
+```sh
+ruff check plugins/ tests/          # lint + import sort
+ruff check plugins/ tests/ --fix    # auto-fix safe issues
+pyright plugins/ tests/              # type-check
+```
+
+Rule config lives in `pyproject.toml`.
+
 Run integration tests against a temporary Stash sandbox (requires Docker and ffmpeg):
 
 ```sh

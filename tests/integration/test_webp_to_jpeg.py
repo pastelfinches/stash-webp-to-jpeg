@@ -77,7 +77,9 @@ def test_converts_webp_cover_to_jpeg(client, sandbox, seeded_scene):
 
     # Dominant color should still be roughly red (cover content preserved).
     img = Image.open(io.BytesIO(after)).convert("RGB")
-    r, g, b = img.resize((1, 1)).getpixel((0, 0))
+    pixel = img.resize((1, 1)).getpixel((0, 0))
+    assert isinstance(pixel, tuple), f"expected RGB tuple, got {type(pixel).__name__}"
+    r, g, b = pixel[0], pixel[1], pixel[2]
     assert r > g and r > b, f"expected red-dominant cover, got rgb=({r},{g},{b})"
 
 

@@ -3,3 +3,5 @@ pytest>=8.0
 requests>=2.32
 Pillow>=10.0.0
 stashapi>=0.1.5
+ruff>=0.15
+pyright>=1.1.408

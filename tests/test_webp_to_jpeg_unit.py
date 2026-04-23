@@ -13,9 +13,8 @@ import io
 import struct
 
 import pytest
-from PIL import Image
-
 import webp_to_jpeg as w2j
+from PIL import Image
 
 
 def make_webp_bytes(size=(16, 16), color=(200, 100, 50)) -> bytes:

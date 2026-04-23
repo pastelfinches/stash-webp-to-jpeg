@@ -32,8 +32,7 @@ def _plugin_scripts():
     for plugin_dir in PLUGINS_ROOT.iterdir():
         if not plugin_dir.is_dir():
             continue
-        for py in plugin_dir.glob("*.py"):
-            yield py
+        yield from plugin_dir.glob("*.py")
 
 
 @pytest.mark.parametrize("script", list(_plugin_scripts()), ids=lambda p: p.name)
