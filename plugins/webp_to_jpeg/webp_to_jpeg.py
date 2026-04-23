@@ -179,7 +179,7 @@ def webp_bytes_to_jpeg_data_url(webp: bytes, quality: int) -> str:
 
 
 def load_settings(stash: StashInterface) -> dict[str, Any]:
-    defaults = {"dryRun": False, "jpegQuality": 92}
+    defaults = {"dryRun": False, "jpegQuality": 92, "workers": 8}
     try:
         config = stash.get_configuration()
     except Exception as e:
@@ -199,6 +199,13 @@ def load_settings(stash: StashInterface) -> dict[str, Any]:
     if q < 1 or q > 100:
         q = 92
     merged["jpegQuality"] = q
+    try:
+        w = int(merged.get("workers") or 0)
+    except (TypeError, ValueError):
+        w = 0
+    if w < 1 or w > 64:
+        w = 8
+    merged["workers"] = w
     return merged
 
 
@@ -227,9 +234,50 @@ def fetch_all_scene_ids(stash: StashInterface) -> list[str]:
     return ids
 
 
-def run_conversion(stash: StashInterface, conn: dict[str, Any], settings: dict[str, Any]) -> dict[str, Any]:
+def _process_scene(
+    sid: str,
+    conn: dict[str, Any],
+    headers: dict[str, str],
+    stash: StashInterface,
+    quality: int,
+    dry_run: bool,
+) -> dict[str, Any]:
+    """Process a single scene. Safe to call from worker threads.
+
+    Returns {"scene_id", "status": fetch_failed|not_webp|would_convert|
+             converted|convert_failed|update_failed, "bytes": int|None}.
+    PIL and requests both release the GIL during network / C image work,
+    so threading gives real parallelism on multi-core boxes.
+    """
+    url = build_cover_url(conn, sid)
+    data = fetch_cover(url, headers)
+    if not data:
+        return {"scene_id": sid, "status": "fetch_failed", "bytes": None}
+    if not is_webp(data):
+        return {"scene_id": sid, "status": "not_webp", "bytes": len(data)}
+    if dry_run:
+        return {"scene_id": sid, "status": "would_convert", "bytes": len(data)}
+    try:
+        data_url = webp_bytes_to_jpeg_data_url(data, quality)
+    except Exception as e:
+        log.warning(f"Scene {sid}: conversion failed: {e}")
+        return {"scene_id": sid, "status": "convert_failed", "bytes": len(data)}
+    try:
+        stash.update_scene({"id": sid, "cover_image": data_url})
+    except Exception as e:
+        log.warning(f"Scene {sid}: update_scene failed: {e}")
+        return {"scene_id": sid, "status": "update_failed", "bytes": len(data)}
+    return {"scene_id": sid, "status": "converted", "bytes": len(data)}
+
+
+def run_conversion(
+    stash: StashInterface, conn: dict[str, Any], settings: dict[str, Any]
+) -> dict[str, Any]:
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
     dry_run = settings["dryRun"]
     quality = settings["jpegQuality"]
+    workers = settings["workers"]
 
     if dry_run:
         log.info("Dry run mode — no changes will be written.")
@@ -237,48 +285,58 @@ def run_conversion(stash: StashInterface, conn: dict[str, Any], settings: dict[s
     log.info("Enumerating scenes...")
     scene_ids = fetch_all_scene_ids(stash)
     total = len(scene_ids)
-    log.info(f"Found {total} scenes to scan for WEBP covers.")
+    log.info(f"Found {total} scenes to scan for WEBP covers ({workers} workers).")
 
     headers = auth_headers(conn)
-    webp_found = 0
-    converted = 0
-    skipped = 0
-    errors = 0
+    tallies = {
+        "fetch_failed": 0,
+        "not_webp": 0,
+        "would_convert": 0,
+        "converted": 0,
+        "convert_failed": 0,
+        "update_failed": 0,
+    }
 
-    for i, sid in enumerate(scene_ids):
-        if total:
-            log.progress(i / total)
-        url = build_cover_url(conn, sid)
-        data = fetch_cover(url, headers)
-        if not data:
-            errors += 1
-            continue
-        if not is_webp(data):
-            skipped += 1
-            continue
-
-        webp_found += 1
-        log.debug(f"Scene {sid}: WEBP cover detected ({len(data)} bytes)")
-
-        if dry_run:
-            continue
-
-        try:
-            data_url = webp_bytes_to_jpeg_data_url(data, quality)
-        except Exception as e:
-            log.warning(f"Scene {sid}: conversion failed: {e}")
-            errors += 1
-            continue
-
-        try:
-            stash.update_scene({"id": sid, "cover_image": data_url})
-            converted += 1
-            log.info(f"Scene {sid}: converted WEBP -> JPEG")
-        except Exception as e:
-            log.warning(f"Scene {sid}: update_scene failed: {e}")
-            errors += 1
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = [
+            pool.submit(
+                _process_scene, sid, conn, headers, stash, quality, dry_run
+            )
+            for sid in scene_ids
+        ]
+        completed = 0
+        for fut in as_completed(futures):
+            result = fut.result()
+            tallies[result["status"]] = tallies.get(result["status"], 0) + 1
+            completed += 1
+            if total:
+                log.progress(completed / total)
+            if result["status"] == "converted":
+                log.info(
+                    f"Scene {result['scene_id']}: converted WEBP -> JPEG "
+                    f"({result['bytes']} bytes)"
+                )
+            elif result["status"] == "would_convert":
+                log.debug(
+                    f"Scene {result['scene_id']}: would convert "
+                    f"({result['bytes']} bytes)"
+                )
 
     log.progress(1.0)
+
+    webp_found = (
+        tallies["would_convert"]
+        + tallies["converted"]
+        + tallies["convert_failed"]
+        + tallies["update_failed"]
+    )
+    converted = tallies["converted"]
+    skipped = tallies["not_webp"]
+    errors = (
+        tallies["fetch_failed"]
+        + tallies["convert_failed"]
+        + tallies["update_failed"]
+    )
 
     summary = {
         "total_scenes": total,

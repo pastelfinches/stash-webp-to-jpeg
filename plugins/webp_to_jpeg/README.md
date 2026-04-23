@@ -36,6 +36,7 @@ Manual install: clone the `plugins/webp_to_jpeg/` directory into Stash's `plugin
 |---|---|---|---|
 | `dryRun` | boolean | `false` | Report WEBP covers without modifying anything. |
 | `jpegQuality` | number | `92` | JPEG encoding quality, 1–100. |
+| `workers` | number | `8` | Scenes processed in parallel. Raise on fast hardware, lower if it pegs Stash's CPU. |
 
 ## How it works
 
