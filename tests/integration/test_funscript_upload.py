@@ -213,14 +213,14 @@ def test_upload_without_overwrite_flag_rejected_when_file_exists(
     video_path = Path(files[0]["path"])
     expected_target = video_path.with_suffix(".funscript")
 
-    exists_result = sandbox.exec("test", "-f", str(expected_target), check=False)
-    if exists_result.returncode != 0:
-        # Write a stub so we can test the rejection.
-        sandbox.exec(
-            "sh",
-            "-c",
-            f'echo \'{{"actions":[{{"at":0,"pos":0}}]}}\' > {expected_target}',
-        )
+    # Always write a 1-action stub so the pre-condition is known regardless
+    # of what a previous test left behind.  The upload payload has 5 actions,
+    # so after a correct rejection the file must still have exactly 1 action.
+    sandbox.exec(
+        "sh",
+        "-c",
+        f'echo \'{{"actions":[{{"at":0,"pos":0}}]}}\' > {expected_target}',
+    )
 
     job_id = client.run_plugin_task(
         PLUGIN_ID,
