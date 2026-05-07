@@ -6,6 +6,7 @@ A source repository of [Stash](https://github.com/stashapp/stash) plugins, built
 
 | Plugin | Description |
 |---|---|
+| [funscript_upload](plugins/funscript_upload) | Adds an "Upload funscript" button to the scene detail page. Pick a `.funscript` from your local device and the plugin writes it next to the video with the correct basename, then triggers a scan so Stash marks the scene interactive. Requires CommunityScriptsUILibrary. |
 | [webp_to_jpeg](plugins/webp_to_jpeg) | Convert scene covers stored as WEBP to JPEG in-place, preserving the original artwork. Fixes missing thumbnails in HereSphere and other WEBP-averse clients. |
 
 ## Install via Stash source URL

@@ -34,7 +34,7 @@ jobs:
           cache: pip
           cache-dependency-path: tests/requirements-test.txt
       - run: pip install -r tests/requirements-test.txt
-      - run: pytest tests/test_webp_to_jpeg_unit.py -v
+      - run: pytest tests/test_webp_to_jpeg_unit.py tests/test_funscript_upload_unit.py tests/test_funscript_upload_task.py -v
 
   integration:
     name: Integration tests (ephemeral Stash)

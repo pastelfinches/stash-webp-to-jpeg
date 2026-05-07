@@ -1,0 +1,35 @@
+name: Funscript Upload
+description: Adds an "Upload funscript" button to the scene detail page. Pick a .funscript file from your local device, and the plugin writes it next to the video with the correct basename, then triggers a metadata scan so Stash marks the scene interactive and generates the heatmap.
+version: 0.3.0
+url: https://github.com/pastelfinches/stash-plugins
+# requires: PythonDepManager
+
+exec:
+  - python
+  - "{pluginDir}/funscript_upload.py"
+
+interface: raw
+
+errLog: info
+
+tasks:
+  - name: Upload Funscript
+    description: Receives a base64-encoded funscript from the UI, validates it, writes it next to the scene video, and triggers a metadata scan.
+    defaultArgs:
+      mode: upload
+
+ui:
+  requires:
+    - CommunityScriptsUILibrary
+  javascript:
+    - funscript_upload.js
+
+settings:
+  generateAfterUpload:
+    displayName: Generate heatmap after upload
+    description: After a successful upload, automatically trigger a metadata generate (interactive heatmap + speeds only) so the heatmap appears immediately. Off by default — turn on if you want every upload to render the heatmap right away.
+    type: BOOLEAN
+  maxSizeMb:
+    displayName: Max upload size in MB (leave 0 for default)
+    description: Maximum decoded funscript size in megabytes. Leave at 0 to use the default (20 MB). Raise if you have very large funscripts with dense action arrays.
+    type: NUMBER
