@@ -372,7 +372,15 @@ def run_upload(
         print(json.dumps({"output": None, "error": "payload_b64 is required"}))
         sys.exit(1)
 
-    overwrite: bool = bool(args.get("overwrite", False))
+    # Stash's Map scalar may serialise booleans as JSON booleans *or* as the
+    # string "true"/"false" depending on version.  Coerce defensively so that
+    # the string "false" is not misread as True.
+    _overwrite_raw = args.get("overwrite", False)
+    overwrite: bool = (
+        _overwrite_raw
+        if isinstance(_overwrite_raw, bool)
+        else str(_overwrite_raw).strip().lower() not in {"false", "0", "no", ""}
+    )
     generate_after: bool = bool(settings.get("generateAfterUpload", False))
 
     # 1. Decode the base64 payload.

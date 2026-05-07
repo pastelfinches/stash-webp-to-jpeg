@@ -287,6 +287,42 @@ class TestOverwrite:
         # Original file must be untouched.
         assert target.read_bytes() == b"existing"
 
+    def test_existing_file_string_false_overwrite_is_rejected(self, tmp_path: Path):
+        """Stash's Map scalar may send booleans as the string 'false'.
+
+        bool('false') is True in Python, so a naive bool() coercion would
+        silently allow the overwrite.  The plugin must handle this.
+        """
+        target = tmp_path / "video.funscript"
+        target.write_bytes(b"existing")
+
+        stash = _make_stash()
+        args: dict[str, Any] = {
+            "mode": "upload",
+            "scene_id": "42",
+            "payload_b64": _make_funscript_b64(),
+            "overwrite": "false",  # string, not bool — mirrors Stash Map coercion
+        }
+
+        captured: list[str] = []
+
+        def fake_print(s: str = "", **_kwargs: Any) -> None:
+            captured.append(s)
+
+        exit_code = 0
+        with patch("builtins.print", side_effect=fake_print), patch.object(
+            fsu, "derive_target_path", return_value=(target, "")
+        ):
+            try:
+                fsu.run_upload(stash, args, _default_settings())
+            except SystemExit as exc:
+                exit_code = int(exc.code) if exc.code is not None else 1
+
+        assert exit_code != 0, "overwrite='false' (string) must be treated as False"
+        payload = json.loads(captured[-1]) if captured else {}
+        assert payload.get("code") == "EXISTS"
+        assert target.read_bytes() == b"existing"
+
     def test_existing_file_with_overwrite_flag_succeeds(self, tmp_path: Path):
         target = tmp_path / "video.funscript"
         target.write_bytes(b"old content")
