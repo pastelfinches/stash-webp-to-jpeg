@@ -234,17 +234,28 @@ def test_upload_without_overwrite_flag_rejected_when_file_exists(
     )
     job = client.wait_for_plugin_task(job_id, timeout=120)
 
-    # The job should complete (FINISHED or FAILED) but the task exits non-zero,
-    # which Stash reports as FAILED with an error message containing "EXISTS".
+    # The job should complete (FINISHED or FAILED) — the plugin exits non-zero,
+    # which different Stash versions surface differently:
+    #   - older: FAILED with an "error" field
+    #   - newer: FINISHED with error: null (exit code not propagated to job status)
     assert job["status"] in {"FINISHED", "FAILED"}, f"unexpected status: {job}"
-    # The error message should indicate the file already exists.
-    # If Stash surfaces this as job error text, check it; otherwise the test
-    # validates the rejection happened (non-success outcome).
+
     error_text = job.get("error") or ""
-    # At minimum: not a silent no-op.
-    if job["status"] == "FINISHED":
-        # Some Stash versions surface plugin exit(1) as FINISHED with an error
-        # field rather than FAILED — accept either.
-        assert error_text or job.get("description"), (
-            "expected an error to be reported when file already exists without overwrite"
+    if error_text:
+        # Older Stash: job error field is populated — validate the code.
+        assert "EXISTS" in error_text or "already exists" in error_text.lower(), (
+            f"unexpected error text: {error_text}"
+        )
+    else:
+        # Newer Stash surfaces the rejection as FINISHED with error=null.
+        # The authoritative check is that the file on disk was NOT overwritten.
+        # The stub has 1 action; the upload payload has 5 — if the content is
+        # still 1 action the plugin correctly declined to replace it.
+        cat_result = sandbox.exec("cat", str(expected_target))
+        on_disk = json.loads(cat_result.stdout)
+        assert len(on_disk.get("actions", [])) != len(
+            json.loads(_make_funscript_bytes()).get("actions", [])
+        ), (
+            "funscript was silently overwritten when overwrite=false — plugin "
+            "did not reject the upload"
         )

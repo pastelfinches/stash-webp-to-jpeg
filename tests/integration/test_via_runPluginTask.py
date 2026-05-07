@@ -19,10 +19,12 @@ Flow:
 from __future__ import annotations
 
 import io
+import shutil
 import tempfile
 from pathlib import Path
 
 import pytest
+import yaml
 from PIL import Image
 
 PLUGIN_ID = "webp_to_jpeg"
@@ -33,15 +35,30 @@ PLUGIN_DIR = ROOT / "plugins" / PLUGIN_ID
 
 @pytest.fixture(scope="module")
 def plugins_installed(sandbox, client):
-    """Install PythonDepManager + our plugin into the running Stash."""
+    """Install PythonDepManager + our plugin into the running Stash.
+
+    The plugin is installed without its `hooks:` section so this test exercises
+    the on-demand convert task in isolation. The Scene.Update.Post hook would
+    otherwise fire during WEBP seeding (and during any subsequent sceneUpdate
+    in the shared session sandbox), pre-converting covers before assertions
+    can run. Hook behaviour is covered by `test_hook_mode.py`.
+    """
     with tempfile.TemporaryDirectory() as tmp:
-        pdm_host = Path(tmp) / "PythonDepManager"
+        tmp_path = Path(tmp)
+        pdm_host = tmp_path / "PythonDepManager"
         sandbox.download_pythondepmanager(pdm_host)
+
+        plugin_host = tmp_path / PLUGIN_ID
+        shutil.copytree(PLUGIN_DIR, plugin_host)
+        manifest_path = plugin_host / f"{PLUGIN_ID}.yml"
+        manifest = yaml.safe_load(manifest_path.read_text())
+        manifest.pop("hooks", None)
+        manifest_path.write_text(yaml.safe_dump(manifest, sort_keys=False))
 
         # Stash plugins dir may not exist yet — create it.
         sandbox.exec("mkdir", "-p", "/root/.stash/plugins")
         sandbox.copy_into(pdm_host, "/root/.stash/plugins/PythonDepManager")
-        sandbox.copy_into(PLUGIN_DIR, f"/root/.stash/plugins/{PLUGIN_ID}")
+        sandbox.copy_into(plugin_host, f"/root/.stash/plugins/{PLUGIN_ID}")
 
     client.reload_plugins()
     return True
